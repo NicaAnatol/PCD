@@ -1,9 +1,12 @@
-#include "../include/geo_proto.h"
+#include "../include/logging.h"
+#include "../include/proto.h"
 
-/* Formula Haversine pentru distanta intre doua puncte (km) */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 double haversine_distance(pointMsgType p1, pointMsgType p2) {
-    double R = 6371.0; /* Raza Pamantului in km */
-    
+    double R = 6371.0;
     double lat1 = p1.lat * M_PI / 180.0;
     double lat2 = p2.lat * M_PI / 180.0;
     double dlat = (p2.lat - p1.lat) * M_PI / 180.0;
@@ -17,10 +20,8 @@ double haversine_distance(pointMsgType p1, pointMsgType p2) {
     return R * c;
 }
 
-/* Calculeaza distanta totala a unui traseu */
 double calculate_distance(pointMsgType *points, int count) {
     if (count < 2) return 0.0;
-    
     double total = 0.0;
     for (int i = 0; i < count - 1; i++) {
         total += haversine_distance(points[i], points[i+1]);
@@ -28,29 +29,34 @@ double calculate_distance(pointMsgType *points, int count) {
     return total;
 }
 
-/* Filtrare puncte in bounding box */
-int filter_by_bbox(pointMsgType *points, int count, double min_lat, double max_lat,
-                   double min_lon, double max_lon, pointMsgType **filtered) {
-    int filtered_count = 0;
-    *filtered = malloc(sizeof(pointMsgType) * count);
-    if (*filtered == NULL) return -1;
+double perpendicular_distance(pointMsgType p, pointMsgType a, pointMsgType b) {
+    double lat1 = a.lat, lon1 = a.lon;
+    double lat2 = b.lat, lon2 = b.lon;
+    double latp = p.lat, lonp = p.lon;
     
-    for (int i = 0; i < count; i++) {
-        if (points[i].lat >= min_lat && points[i].lat <= max_lat &&
-            points[i].lon >= min_lon && points[i].lon <= max_lon) {
-            (*filtered)[filtered_count++] = points[i];
-        }
+    double dx = lat2 - lat1;
+    double dy = lon2 - lon1;
+    
+    if (dx == 0 && dy == 0) {
+        return haversine_distance(p, a);
     }
     
-    return filtered_count;
+    double t = ((latp - lat1) * dx + (lonp - lon1) * dy) / (dx * dx + dy * dy);
+    
+    if (t < 0) return haversine_distance(p, a);
+    if (t > 1) return haversine_distance(p, b);
+    
+    pointMsgType proj;
+    proj.lat = lat1 + t * dx;
+    proj.lon = lon1 + t * dy;
+    
+    return haversine_distance(p, proj);
 }
 
-/* Douglas-Peucker - simplificare traseu */
 static void douglas_peucker_recursive(pointMsgType *points, int start, int end,
                                       double epsilon, int *keep, int *keep_count) {
     if (end <= start + 1) return;
     
-    /* Găsește punctul cu distanta maxima */
     double dmax = 0;
     int index = start;
     
@@ -63,7 +69,6 @@ static void douglas_peucker_recursive(pointMsgType *points, int start, int end,
     }
     
     if (dmax > epsilon) {
-        /* Păstrează punctul și procesează recursiv */
         keep[index] = 1;
         (*keep_count)++;
         douglas_peucker_recursive(points, start, index, epsilon, keep, keep_count);
@@ -71,17 +76,15 @@ static void douglas_peucker_recursive(pointMsgType *points, int start, int end,
     }
 }
 
-int douglas_peucker(pointMsgType *points, int count, double epsilon,
-                    pointMsgType **simplified) {
+int douglas_peucker(pointMsgType *points, int count, double epsilon, pointMsgType **simplified) {
     if (count < 3) {
         *simplified = malloc(sizeof(pointMsgType) * count);
-        if (*simplified == NULL) return -1;
-        memcpy(*simplified, points, sizeof(pointMsgType) * count);
+        if (*simplified) memcpy(*simplified, points, sizeof(pointMsgType) * count);
         return count;
     }
     
     int *keep = calloc(count, sizeof(int));
-    if (keep == NULL) return -1;
+    if (!keep) return -1;
     
     keep[0] = 1;
     keep[count - 1] = 1;
@@ -90,45 +93,41 @@ int douglas_peucker(pointMsgType *points, int count, double epsilon,
     douglas_peucker_recursive(points, 0, count - 1, epsilon, keep, &keep_count);
     
     *simplified = malloc(sizeof(pointMsgType) * keep_count);
-    if (*simplified == NULL) {
+    if (!*simplified) {
         free(keep);
         return -1;
     }
     
     int idx = 0;
     for (int i = 0; i < count; i++) {
-        if (keep[i]) {
-            (*simplified)[idx++] = points[i];
-        }
+        if (keep[i]) (*simplified)[idx++] = points[i];
     }
     
     free(keep);
     return keep_count;
 }
 
-/* Procesare fisier cu fork() si pipe() */
-int process_with_children(const char *filename, int num_children,
-                          geoStatsMsgType *result) {
+int process_with_children(const char *filename, int num_children, geoStatsMsgType *result) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) {
         log_message("[ERROR] Cannot open file");
         return -1;
     }
     
-    /* Citire puncte din fisier */
     pointMsgType points[10000];
     int point_count = 0;
-    char buffer[512];
+    char buffer[4096];
     ssize_t bytes;
     
-    while ((bytes = read(fd, buffer, sizeof(buffer))) > 0) {
-        /* Parsare simpla: "lat,lon\n" */
+    while ((bytes = read(fd, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[bytes] = '\0';
         char *line = buffer;
         char *next;
         while ((next = strchr(line, '\n')) != NULL) {
             *next = '\0';
-            sscanf(line, "%lf,%lf", &points[point_count].lat, &points[point_count].lon);
-            point_count++;
+            if (sscanf(line, "%lf,%lf", &points[point_count].lat, &points[point_count].lon) == 2) {
+                point_count++;
+            }
             line = next + 1;
         }
     }
@@ -139,52 +138,38 @@ int process_with_children(const char *filename, int num_children,
         return -1;
     }
     
-    /* Fork procese copii */
     int points_per_child = point_count / num_children;
+    if (points_per_child < 1) points_per_child = 1;
+    
     int pipes[num_children][2];
     pid_t pids[num_children];
-    double distances[num_children];
     
     for (int i = 0; i < num_children; i++) {
-        if (pipe(pipes[i]) < 0) {
-            char err[] = "[ERROR] pipe failed\n";
-            write(STDERR_FILENO, err, sizeof(err)-1);
-            return -1;
-        }
+        if (pipe(pipes[i]) < 0) return -1;
         
         pids[i] = fork();
         
         if (pids[i] == 0) {
-            /* Proces copil */
-            close(pipes[i][0]); /* Inchide capatul de citire */
-            
+            close(pipes[i][0]);
             int start = i * points_per_child;
             int end = (i == num_children - 1) ? point_count : start + points_per_child;
-            
             double dist = calculate_distance(points + start, end - start);
-            
             write(pipes[i][1], &dist, sizeof(double));
             close(pipes[i][1]);
             _exit(0);
-        }
-        else if (pids[i] < 0) {
-            char err[] = "[ERROR] fork failed\n";
-            write(STDERR_FILENO, err, sizeof(err)-1);
+        } else if (pids[i] < 0) {
             return -1;
         }
-        
-        /* Proces parinte */
         close(pipes[i][1]);
     }
     
-    /* Așteaptă copiii și colectează rezultatele */
     double total_distance = 0.0;
     for (int i = 0; i < num_children; i++) {
         int status;
         waitpid(pids[i], &status, 0);
-        
-        read(pipes[i][0], &distances[i], sizeof(double));
-        total_distance += distances[i];
+        double dist;
+        read(pipes[i][0], &dist, sizeof(double));
+        total_distance += dist;
         close(pipes[i][0]);
     }
     
@@ -194,10 +179,9 @@ int process_with_children(const char *filename, int num_children,
     result->processing_time_ms = 0;
     
     char logbuf[256];
-    int len = snprintf(logbuf, sizeof(logbuf),
-                       "[GEO] Processed %d points with %d children, distance=%.2f km\n",
-                       point_count, num_children, total_distance);
-    write(STDERR_FILENO, logbuf, len);
+    snprintf(logbuf, sizeof(logbuf), "[GEO] Processed %d points with %d children, distance=%.2f km",
+             point_count, num_children, total_distance);
+    log_message(logbuf);
     
     return 0;
 }
