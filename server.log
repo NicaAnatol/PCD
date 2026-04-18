@@ -560,3 +560,109 @@
 [2026-04-14 18:49:36] [INET] User user1 authenticated, session=1000
 [2026-04-14 18:50:33] [GEO] Session 1000: 2 points, distance=411.27 km
 [2026-04-14 18:51:41] [UNIX] Admin disconnected
+[2026-04-16 22:10:36] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:10:36] [INET] Starting INET server on port 18081...
+[2026-04-16 22:10:36] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:10:36] [WORKER] Starting geo worker thread
+[2026-04-16 22:11:01] [UNIX] Admin connected
+[2026-04-16 22:11:20] [INET] New connection on fd=7
+[2026-04-16 22:11:26] [AUTH] User user1 auth result: 1 (using passwords.txt)
+[2026-04-16 22:11:26] [SESSION] Created session 1000 for user user1
+[2026-04-16 22:11:26] [INET] User user1 authenticated, session=1000
+[2026-04-16 22:12:06] [QUEUE] Task 1 added: manual_input
+[2026-04-16 22:12:06] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-16 22:12:07] [QUEUE] Task 2 added: manual_input
+[2026-04-16 22:12:07] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-16 22:12:08] [QUEUE] Task 3 added: manual_input
+[2026-04-16 22:12:08] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-16 22:12:08] [QUEUE] Task 4 added: manual_input
+[2026-04-16 22:12:08] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-16 22:12:18] [QUEUE] Task 5 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=411.27 km
+[2026-04-16 22:12:18] [QUEUE] Task 6 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=5109.63 km
+[2026-04-16 22:12:18] [QUEUE] Task 7 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 8 points, distance=0.00 km
+[2026-04-16 22:12:18] [QUEUE] Task 8 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=4809.98 km
+[2026-04-16 22:12:18] [QUEUE] Task 9 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=6519.96 km
+[2026-04-16 22:12:18] [QUEUE] Task 10 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=15316.14 km
+[2026-04-16 22:12:18] [QUEUE] Task 11 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 8 points, distance=0.00 km
+[2026-04-16 22:12:18] [QUEUE] Task 12 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=6490.62 km
+[2026-04-16 22:12:18] [QUEUE] Task 13 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=4975.70 km
+[2026-04-16 22:12:18] [QUEUE] Task 14 added: manual_input
+[2026-04-16 22:12:18] [GEO] Session 1000: 9 points, distance=4619.23 km
+[2026-04-16 22:12:19] [QUEUE] Task 15 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 8 points, distance=0.00 km
+[2026-04-16 22:12:19] [QUEUE] Task 16 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 8 points, distance=0.00 km
+[2026-04-16 22:12:19] [QUEUE] Task 17 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 9 points, distance=4086.97 km
+[2026-04-16 22:12:19] [QUEUE] Task 18 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 9 points, distance=6519.96 km
+[2026-04-16 22:12:19] [QUEUE] Task 19 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 9 points, distance=2490.19 km
+[2026-04-16 22:12:19] [QUEUE] Task 20 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 8 points, distance=0.00 km
+[2026-04-16 22:12:19] [QUEUE] Task 21 added: manual_input
+[2026-04-16 22:12:19] [GEO] Session 1000: 1 points, distance=0.00 km
+[2026-04-16 22:15:12] [UNIX] Admin disconnected
+[2026-04-16 22:32:10] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:32:10] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:32:10] [INET] Starting INET server on port 18081...
+[2026-04-16 22:32:10] [WORKER] Starting geo worker thread
+[2026-04-16 22:35:05] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:35:05] [INET] Starting INET server on port 18081...
+[2026-04-16 22:35:05] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:35:05] [WORKER] Starting geo worker thread
+[2026-04-16 22:35:16] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:35:16] [INET] Starting INET server on port 18081...
+[2026-04-16 22:35:16] [WORKER] Starting geo worker thread
+[2026-04-16 22:35:16] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:35:49] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:35:49] [INET] Starting INET server on port 18081...
+[2026-04-16 22:35:49] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:35:49] [WORKER] Starting geo worker thread
+[2026-04-16 22:36:59] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:36:59] [INET] Starting INET server on port 18081...
+[2026-04-16 22:36:59] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:36:59] [WORKER] Starting geo worker thread
+[2026-04-16 22:37:11] [UNIX] Admin connected
+[2026-04-16 22:37:46] [INET] New connection on fd=7
+[2026-04-16 22:37:53] [AUTH] User user1 auth result: 1 (using passwords.txt)
+[2026-04-16 22:37:53] [SESSION] Created session 1000 for user user1
+[2026-04-16 22:37:53] [INET] User user1 authenticated, session=1000
+[2026-04-16 22:38:32] [MAIN] Starting Geo Processing Server...
+[2026-04-16 22:38:32] [INET] Starting INET server on port 18081...
+[2026-04-16 22:38:32] [WORKER] Starting geo worker thread
+[2026-04-16 22:38:32] [UNIX] Server listening on /tmp/geods
+[2026-04-16 22:38:55] [INET] New connection on fd=6
+[2026-04-16 22:39:20] [UNIX] Admin connected
+[2026-04-16 22:39:37] [AUTH] User user1 auth result: 1 (using passwords.txt)
+[2026-04-16 22:39:37] [SESSION] Created session 1000 for user user1
+[2026-04-16 22:39:37] [INET] User user1 authenticated, session=1000
+[2026-04-16 22:39:42] [QUEUE] Task 1 added: manual_input
+[2026-04-16 22:39:42] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-16 22:40:46] [ADMIN] Terminated session 1000 for user user1
+[2026-04-18 10:56:05] [MAIN] Starting Geo Processing Server...
+[2026-04-18 10:56:05] [INET] Starting INET server on port 18081...
+[2026-04-18 10:56:05] [WORKER] Starting geo worker thread
+[2026-04-18 10:56:05] [UNIX] Server listening on /tmp/geods
+[2026-04-18 10:56:14] [MAIN] Starting Geo Processing Server...
+[2026-04-18 10:56:14] [INET] Starting INET server on port 18081...
+[2026-04-18 10:56:14] [WORKER] Starting geo worker thread
+[2026-04-18 10:56:14] [INET] Failed to create socket
+[2026-04-18 10:56:14] [UNIX] Server listening on /tmp/geods
+[2026-04-18 10:56:24] [INET] New connection on fd=6
+[2026-04-18 11:01:11] [AUTH] User user1 auth result: 1 (using passwords.txt)
+[2026-04-18 11:01:11] [SESSION] Created session 1000 for user user1
+[2026-04-18 11:01:11] [INET] User user1 authenticated, session=1000
+[2026-04-18 11:02:38] [QUEUE] Task 1 added: manual_input
+[2026-04-18 11:02:38] [GEO] Session 1000: 2 points, distance=411.27 km
+[2026-04-18 11:03:00] [QUEUE] Task 2 added: test.gpx
+[2026-04-18 11:03:00] [GEO] Session 1000: 3 points, distance=628.95 km
