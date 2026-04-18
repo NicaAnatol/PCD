@@ -58,27 +58,8 @@ void format_stats(char *buffer, size_t size) {
         snprintf(buffer, size, "Eroare la conectare\n");
         return;
     }
-    
-    char *line = strtok(response, "\n");
-    int line_num = 0;
-    buffer[0] = '\0';
-    
-    while (line && line_num < 20) {
-        if (strstr(line, "=== STATISTICI") && line_num == 0) {
-            strcat(buffer, "┌─────────────────────────────────────────┐\n");
-        }
-        if (strstr(line, "========================")) {
-            strcat(buffer, "└─────────────────────────────────────────┘\n");
-        } else {
-            strcat(buffer, "│ ");
-            strcat(buffer, line);
-            int len = strlen(line);
-            while (len++ < 39) strcat(buffer, " ");
-            strcat(buffer, "│\n");
-        }
-        line = strtok(NULL, "\n");
-        line_num++;
-    }
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
 }
 
 void format_clients(char *buffer, size_t size) {
@@ -87,22 +68,8 @@ void format_clients(char *buffer, size_t size) {
         snprintf(buffer, size, "Eroare la obtinerea listei clientilor\n");
         return;
     }
-    
-    buffer[0] = '\0';
-    strcat(buffer, "┌─────────────────────────────────────────┐\n");
-    strcat(buffer, "│         CLIENTI CONECTATI               │\n");
-    strcat(buffer, "├─────────────────────────────────────────┤\n");
-    
-    char *line = strtok(response, "\n");
-    while (line) {
-        strcat(buffer, "│ ");
-        strcat(buffer, line);
-        int len = strlen(line);
-        while (len++ < 39) strcat(buffer, " ");
-        strcat(buffer, "│\n");
-        line = strtok(NULL, "\n");
-    }
-    strcat(buffer, "└─────────────────────────────────────────┘\n");
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
 }
 
 void format_history(char *buffer, size_t size) {
@@ -111,22 +78,8 @@ void format_history(char *buffer, size_t size) {
         snprintf(buffer, size, "Eroare la obtinerea istoricului\n");
         return;
     }
-    
-    buffer[0] = '\0';
-    strcat(buffer, "┌─────────────────────────────────────────┐\n");
-    strcat(buffer, "│         ISTORIC COMENZI                 │\n");
-    strcat(buffer, "├─────────────────────────────────────────┤\n");
-    
-    char *line = strtok(response, "\n");
-    while (line) {
-        strcat(buffer, "│ ");
-        strcat(buffer, line);
-        int len = strlen(line);
-        while (len++ < 39) strcat(buffer, " ");
-        strcat(buffer, "│\n");
-        line = strtok(NULL, "\n");
-    }
-    strcat(buffer, "└─────────────────────────────────────────┘\n");
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
 }
 
 void format_queue(char *buffer, size_t size) {
@@ -135,45 +88,30 @@ void format_queue(char *buffer, size_t size) {
         snprintf(buffer, size, "Eroare la obtinerea cozii\n");
         return;
     }
-    
-    buffer[0] = '\0';
-    strcat(buffer, "┌─────────────────────────────────────────┐\n");
-    strcat(buffer, "│         COADA DE PROCESARE              │\n");
-    strcat(buffer, "├─────────────────────────────────────────┤\n");
-    
-    char *line = strtok(response, "\n");
-    while (line) {
-        strcat(buffer, "│ ");
-        strcat(buffer, line);
-        int len = strlen(line);
-        while (len++ < 39) strcat(buffer, " ");
-        strcat(buffer, "│\n");
-        line = strtok(NULL, "\n");
-    }
-    strcat(buffer, "└─────────────────────────────────────────┘\n");
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
 }
 
-/* Formateaza timp mediu */
 void format_avg_time(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
     if (send_command("AVG_TIME", response, sizeof(response)) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea timpului mediu\n");
         return;
     }
-    
-    buffer[0] = '\0';
-    strcat(buffer, "┌─────────────────────────────────────────┐\n");
-    strcat(buffer, "│         TIMP MEDIU PROCESARE            │\n");
-    strcat(buffer, "├─────────────────────────────────────────┤\n");
-    strcat(buffer, "│ ");
-    strcat(buffer, response);
-    int len = strlen(response);
-    while (len++ < 39) strcat(buffer, " ");
-    strcat(buffer, "│\n");
-    strcat(buffer, "└─────────────────────────────────────────┘\n");
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
 }
 
-/* Initializare culori ncurses */
+void format_sessions(char *buffer, size_t size) {
+    char response[BUFFER_SIZE];
+    if (send_command("SESSIONS", response, sizeof(response)) < 0) {
+        snprintf(buffer, size, "Eroare la obtinerea sesiunilor\n");
+        return;
+    }
+    strncpy(buffer, response, size);
+    buffer[size-1] = '\0';
+}
+
 void init_colors(void) {
     if (has_colors()) {
         start_color();
@@ -204,7 +142,9 @@ void draw_interface(int selected) {
         "3. Coada de procesare",
         "4. Istoric comenzi",
         "5. Timp mediu procesare",
-        "6. Creare proces (fork test)",
+        "6. Sesiuni active",
+        "7. Creare proces (fork test)",
+        "8. Termina sesiune (KILL)",
         "q. Iesire"
     };
     int n_menu = sizeof(menu) / sizeof(menu[0]);
@@ -238,6 +178,9 @@ void draw_interface(int selected) {
         case 4:
             format_avg_time(buffer, sizeof(buffer));
             break;
+        case 5:
+            format_sessions(buffer, sizeof(buffer));
+            break;
         default:
             buffer[0] = '\0';
             break;
@@ -263,6 +206,7 @@ int main(void) {
     int ch;
     int running = 1;
     time_t last_activity;
+    char input[32];
     
     sock = connect_to_server();
     if (sock < 0) {
@@ -281,8 +225,8 @@ int main(void) {
     int max_y = LINES - 2;
     int max_x = COLS - 2;
     
-    main_wnd = newwin(max_y, 30, 1, 1);
-    stats_wnd = newwin(max_y, max_x - 30, 1, 32);
+    main_wnd = newwin(max_y, 35, 1, 1);
+    stats_wnd = newwin(max_y, max_x - 35, 1, 37);
     
     scrollok(stats_wnd, TRUE);
     
@@ -319,8 +263,30 @@ int main(void) {
                     selected = 4;
                     break;
                 case '6':
+                    selected = 5;
+                    break;
+                case '7':
                     send_command("PROCESSES", NULL, 0);
                     break;
+                case '8': {
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "Session ID de terminat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, 10);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[37];
+                    snprintf(cmd, sizeof(cmd), "KILL %s", input);
+                    char response[256];
+                    send_command(cmd, response, sizeof(response));
+                    
+                    mvwprintw(stats_wnd, 1, 2, "%s", response);
+                    wrefresh(stats_wnd);
+                    napms(2000);
+                    break;
+                }
                 case 'q':
                 case 'Q':
                     running = 0;

@@ -9,6 +9,8 @@ extern void stats_decrement_processes(void);
 extern void format_history_response(char *buffer, size_t bufsize);
 extern void format_queue_response(char *buffer, size_t bufsize);
 extern void format_avg_time_response(char *buffer, size_t bufsize);
+extern void format_sessions_response(char *buffer, size_t bufsize);
+extern int terminate_session(int session_id);
 
 void format_stats_response(server_stats_t *stats, char *buffer, size_t bufsize) {
     (void)bufsize;
@@ -142,6 +144,10 @@ void *unix_main(void *args) {
                     format_avg_time_response(buffer, sizeof(buffer));
                     write(client_fd, buffer, strlen(buffer));
                 }
+                else if (strcmp(buffer, "SESSIONS") == 0) {
+                    format_sessions_response(buffer, sizeof(buffer));
+                    write(client_fd, buffer, strlen(buffer));
+                }
                 else if (strcmp(buffer, "PROCESSES") == 0) {
                     pid_t pid = fork();
                     if (pid == 0) {
@@ -153,6 +159,16 @@ void *unix_main(void *args) {
                     char msg[] = "Proces creat (fork test)\n";
                     write(client_fd, msg, sizeof(msg)-1);
                 }
+                else if (strncmp(buffer, "KILL", 4) == 0) {
+                    int session_id = atoi(buffer + 5);
+                    if (terminate_session(session_id)) {
+                        char msg[] = "Sesiune terminata\n";
+                        write(client_fd, msg, sizeof(msg)-1);
+                    } else {
+                        char msg[] = "Sesiune negasita\n";
+                        write(client_fd, msg, sizeof(msg)-1);
+                    }
+                }
                 else if (strcmp(buffer, "PING") == 0) {
                     write(client_fd, "PONG", 4);
                 }
@@ -160,7 +176,7 @@ void *unix_main(void *args) {
                     break;
                 }
                 else {
-                    char msg[] = "Comenzi: STATS, CLIENTS, HISTORY, QUEUE, AVG_TIME, PROCESSES, EXIT\n";
+                    char msg[] = "Comenzi: STATS, CLIENTS, HISTORY, QUEUE, AVG_TIME, SESSIONS, PROCESSES, KILL <id>, EXIT\n";
                     write(client_fd, msg, sizeof(msg)-1);
                 }
             }
