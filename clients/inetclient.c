@@ -1,4 +1,3 @@
-
 #include "../include/proto.h"
 #include <fcntl.h>
 #include <sys/wait.h>
@@ -249,26 +248,6 @@ int do_register(int sock) {
     return 0;
 }
 
-
-int mysystem(char *const command) {
-    if (!command || !*command) return 0;
-    
-    pid_t pid = fork();
-    if (pid < 0) return -1;
-    
-    if (pid == 0) {
-        execl("/bin/sh", "sh", "-c", command, (char *)NULL);
-        _exit(127);
-    }
-    
-    int status;
-    waitpid(pid, &status, 0);
-    
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    return -1;
-}
-
-
 char* read_single_string(int sock) {
     char header[12];
     int received = 0;
@@ -463,7 +442,7 @@ int upload_geo_file(const char *filename, const char *bbox, double epsilon,
 
 void print_prompt(void) {
     char prompt[256];
-    snprintf(prompt, sizeof(prompt), "\n\033[1;32m%s@geoclient\033[0m> ", current_user);
+    snprintf(prompt, sizeof(prompt), "\n%s@geoclient> ", current_user);
     write(STDOUT_FILENO, prompt, strlen(prompt));
 }
 
@@ -488,7 +467,7 @@ int connect_to_server(void) {
 
 void print_usage(void) {
     char help[] = 
-        "\n\033[1;33mComenzi disponibile:\033[0m\n"
+        "\nComenzi disponibile:\n"
         "  upload <fisier>                                    - Upload simplu\n"
         "  upload --bbox <min_lat,max_lat,min_lon,max_lon> <fisier>\n"
         "  upload --simplify <epsilon> <fisier>               - Simplificare traseu\n"
@@ -497,7 +476,7 @@ void print_usage(void) {
         "  <lat,lon> [lat,lon ...]                            - Introducere directa puncte\n"
         "  help                                               - Acest mesaj\n"
         "  exit                                               - Iesire\n"
-        "\n\033[1;33mExemple:\033[0m\n"
+        "\nExemple:\n"
         "  upload test.csv\n"
         "  upload --bbox 44,48,20,30 test.csv\n"
         "  upload --simplify 0.5 test.csv\n"
@@ -618,7 +597,7 @@ void shell_loop(void) {
 
 
 void print_menu(void) {
-    char menu[] = "\n\033[1;36m=== CLIENT GEOSPAȚIAL ===\033[0m\n"
+    char menu[] = "\n=== CLIENT GEOSPAȚIAL ===\n"
                   "1. Autentificare\n"
                   "2. Creare cont nou\n"
                   "3. Iesire\n"

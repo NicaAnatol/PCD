@@ -9,7 +9,7 @@
 #include <time.h>
 #include <signal.h>
 
-#define UNIX_SOCKET_PATH "/tmp/geods"
+#define UNIX_SOCKET_PATH "/tmp/geods.sock"
 #define BUFFER_SIZE 8192
 #define TIMEOUT_SEC 60
 
@@ -307,6 +307,7 @@ int main(void) {
     close(sock);
     endwin();
     
-    write(STDOUT_FILENO, "Admin deconectat.\n", 18);
+    write(STDOUT_FILENO, "Admin disconected.\n", 18);
     return 0;
 }
+
