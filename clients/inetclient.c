@@ -1,40 +1,52 @@
-#include "../include/proto.h"
-#include <fcntl.h>
-#include <sys/wait.h>
-#include <ctype.h>
+#include "../include/proto.h"      // Pentru structuri si protocolul de comunicare client-server
+#include <fcntl.h>                // Pentru operatii pe fisiere (open)
+#include <sys/wait.h>             // Pentru wait (folosit posibil in alte parti)
+#include <ctype.h>                // Pentru functii de manipulare caractere
 
 #define MAX_INPUT 256
 #define MAX_POINTS 100000
 
-static char current_user[64] = "";
-static int session_id = 0;
-static int sock = -1;
+// Date globale ale clientului curent
+static char current_user[64] = "";   // numele utilizatorului autentificat
+static int session_id = 0;           // ID-ul sesiunii active
+static int sock = -1;                // socket-ul de comunicare cu serverul
 
-
+// Elimina spatiile si newline-urile de la inceputul si sfarsitul unui string
 void trim(char *s) {
     if (!s) return;
     char *start = s;
+    
     while (*start == ' ' || *start == '\t' || *start == '\n') start++;
-    if (*start == '\0') { *s = '\0'; return; }
+    
+    if (*start == '\0') { 
+        *s = '\0'; 
+        return; 
+    }
+    
     char *end = start + strlen(start) - 1;
     while (end > start && (*end == ' ' || *end == '\t' || *end == '\n')) end--;
+    
     *(end + 1) = '\0';
+    
     if (start != s) memmove(s, start, strlen(start) + 1);
 }
 
+// Citeste o linie dintr-un descriptor de fisier (ex: stdin)
 ssize_t read_line(int fd, char *buf, size_t size) {
     ssize_t i = 0;
     char c;
+    
     while (i < (ssize_t)size - 1) {
         if (read(fd, &c, 1) <= 0) break;
         if (c == '\n') break;
         buf[i++] = c;
     }
+    
     buf[i] = '\0';
     return i;
 }
 
-
+// Parseaza un fisier CSV de forma "lat,lon" pe fiecare linie
 int parse_csv(const char *filename, pointMsgType **points) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) return -1;
@@ -50,17 +62,23 @@ int parse_csv(const char *filename, pointMsgType **points) {
     int point_count = 0;
     char *line, *next;
     
+    // Citire pe bucati si separare pe linii
     while ((bytes = read(fd, buffer, sizeof(buffer) - 1)) > 0 && point_count < MAX_POINTS) {
         buffer[bytes] = '\0';
         line = buffer;
+        
         while ((next = strchr(line, '\n')) != NULL && point_count < MAX_POINTS) {
             *next = '\0';
+            
+            // Extrage lat si lon din linie
             if (sscanf(line, "%lf,%lf", &temp[point_count].lat, &temp[point_count].lon) == 2) {
                 point_count++;
             }
+            
             line = next + 1;
         }
     }
+    
     close(fd);
     
     if (point_count == 0) {
@@ -72,6 +90,7 @@ int parse_csv(const char *filename, pointMsgType **points) {
     return point_count;
 }
 
+// Parseaza un fisier GPX cautand tag-uri <trkpt lat="..." lon="...">
 int parse_gpx(const char *filename, pointMsgType **points) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) return -1;
@@ -95,6 +114,7 @@ int parse_gpx(const char *filename, pointMsgType **points) {
     int point_count = 0;
     char *ptr = buffer;
     
+    // Cauta fiecare aparitie a unui punct de track
     while ((ptr = strstr(ptr, "<trkpt")) != NULL && point_count < MAX_POINTS) {
         char *lat_ptr = strstr(ptr, "lat=\"");
         char *lon_ptr = strstr(ptr, "lon=\"");
@@ -103,6 +123,7 @@ int parse_gpx(const char *filename, pointMsgType **points) {
             double lat, lon;
             sscanf(lat_ptr + 5, "%lf", &lat);
             sscanf(lon_ptr + 5, "%lf", &lon);
+            
             temp[point_count].lat = lat;
             temp[point_count].lon = lon;
             point_count++;
@@ -119,6 +140,7 @@ int parse_gpx(const char *filename, pointMsgType **points) {
     return point_count;
 }
 
+// Parseaza un fisier GeoJSON extragand coordonatele din campul "coordinates"
 int parse_geojson(const char *filename, pointMsgType **points) {
     int fd = open(filename, O_RDONLY);
     if (fd < 0) return -1;
@@ -142,11 +164,14 @@ int parse_geojson(const char *filename, pointMsgType **points) {
     int point_count = 0;
     char *ptr = buffer;
     
+    // Cauta sectiunea "coordinates"
     char *coords = strstr(ptr, "\"coordinates\"");
     if (coords) {
         char *start = strchr(coords, '[');
+        
         if (start) {
             char *coord_ptr = start;
+            
             while (*coord_ptr && point_count < MAX_POINTS) {
                 char *open_bracket = strchr(coord_ptr, '[');
                 if (!open_bracket) break;
@@ -156,6 +181,7 @@ int parse_geojson(const char *filename, pointMsgType **points) {
                 
                 char coord_str[256];
                 int len = close_bracket - open_bracket - 1;
+                
                 if (len > 0 && len < (int)sizeof(coord_str)) {
                     strncpy(coord_str, open_bracket + 1, len);
                     coord_str[len] = '\0';
@@ -167,6 +193,7 @@ int parse_geojson(const char *filename, pointMsgType **points) {
                         point_count++;
                     }
                 }
+                
                 coord_ptr = close_bracket + 1;
             }
         }
@@ -181,7 +208,7 @@ int parse_geojson(const char *filename, pointMsgType **points) {
     return point_count;
 }
 
-
+// Realizeaza autentificarea utilizatorului prin trimiterea user/parola catre server
 int do_login(int sock) {
     char user[64], pass[64];
     msgHeaderType h;
@@ -197,23 +224,28 @@ int do_login(int sock) {
     h.clientID = 0;
     h.opID = OPR_LOGIN;
     
+    // Trimite datele de autentificare
     writeSingleString(sock, h, user);
     writeSingleString(sock, h, pass);
     
     msgIntType m;
     readSingleInt(sock, &m);
     
+    // Daca serverul returneaza un session_id valid
     if (m.msg > 0) {
         session_id = m.msg;
         strncpy(current_user, user, sizeof(current_user) - 1);
+        
         char buf[128];
         snprintf(buf, sizeof(buf), "Autentificare reusita! Session ID: %d\n", session_id);
         write(STDOUT_FILENO, buf, strlen(buf));
         return 1;
     }
+    
     return 0;
 }
 
+// Creeaza un cont nou pe server
 int do_register(int sock) {
     char user[64], pass[64];
     msgHeaderType h;
@@ -229,6 +261,7 @@ int do_register(int sock) {
     h.clientID = 0;
     h.opID = OPR_REGISTER;
     
+    // Trimite datele catre server
     writeSingleString(sock, h, user);
     writeSingleString(sock, h, pass);
     
@@ -238,25 +271,32 @@ int do_register(int sock) {
     if (m.msg > 0) {
         session_id = m.msg;
         strncpy(current_user, user, sizeof(current_user) - 1);
+        
         write(STDOUT_FILENO, "Cont creat cu succes!\n", 22);
+        
         char buf[128];
         snprintf(buf, sizeof(buf), "Session ID: %d\n", session_id);
         write(STDOUT_FILENO, buf, strlen(buf));
         return 1;
     }
+    
     write(STDERR_FILENO, "Eroare la creare cont!\n", 23);
     return 0;
 }
 
+// Citeste un string de la server conform protocolului (header + lungime + continut)
 char* read_single_string(int sock) {
     char header[12];
     int received = 0;
+    
+    // Citeste header-ul mesajului
     while (received < 12) {
         int n = recv(sock, header + received, 12 - received, 0);
         if (n <= 0) return NULL;
         received += n;
     }
     
+    // Citeste lungimea string-ului
     char len_buf[4];
     received = 0;
     while (received < 4) {
@@ -264,6 +304,7 @@ char* read_single_string(int sock) {
         if (n <= 0) return NULL;
         received += n;
     }
+    
     int str_len = ntohl(*(int*)len_buf);
     
     if (str_len <= 0 || str_len > 65536) return NULL;
@@ -271,6 +312,7 @@ char* read_single_string(int sock) {
     char *str = malloc(str_len + 1);
     if (!str) return NULL;
     
+    // Citeste efectiv continutul string-ului
     received = 0;
     while (received < str_len) {
         int n = recv(sock, str + received, str_len - received, 0);
@@ -280,12 +322,13 @@ char* read_single_string(int sock) {
         }
         received += n;
     }
-    str[str_len] = '\0';
     
+    str[str_len] = '\0';
     return str;
 }
 
-
+// Trimite catre server punctele si toate optiunile selectate de utilizator.
+// Dupa procesare, primeste raspunsul si afiseaza rezultatele.
 int send_points_to_server(pointMsgType *points, int point_count, const char *filename, 
                           const char *bbox, double epsilon, int show_segments,
                           int dist_idx1, int dist_idx2) {
@@ -296,41 +339,50 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
     char segments_str[8] = "";
     char dist1_str[16] = "", dist2_str[16] = "";
     
+    // Header-ul mesajului identifica sesiunea curenta si operatia ceruta
     h.clientID = session_id;
     h.opID = OPR_UPLOAD_GEO;
     
+    // Trimite numele fisierului catre server
     char fname[256];
     strncpy(fname, filename, sizeof(fname) - 1);
     writeSingleString(sock, h, fname);
     
+    // Trimite numarul de puncte
     char point_cnt_str[32];
     snprintf(point_cnt_str, sizeof(point_cnt_str), "%d", point_count);
     writeSingleString(sock, h, point_cnt_str);
     
+    // Trimite optional bounding box-ul
     if (bbox) {
         snprintf(bbox_str, sizeof(bbox_str), "%s", bbox);
     }
     writeSingleString(sock, h, bbox_str);
     
+    // Trimite optional epsilon pentru simplificare
     if (epsilon > 0) {
         snprintf(epsilon_str, sizeof(epsilon_str), "%.6f", epsilon);
     }
     writeSingleString(sock, h, epsilon_str);
     
+    // Trimite flag-ul pentru afisarea segmentelor
     snprintf(segments_str, sizeof(segments_str), "%d", show_segments);
     writeSingleString(sock, h, segments_str);
     
+    // Trimite indicii pentru calculul distantei intre doua puncte
     snprintf(dist1_str, sizeof(dist1_str), "%d", dist_idx1);
     snprintf(dist2_str, sizeof(dist2_str), "%d", dist_idx2);
     writeSingleString(sock, h, dist1_str);
     writeSingleString(sock, h, dist2_str);
     
+    // Trimite toate punctele sub forma de string "lat,lon"
     for (int i = 0; i < point_count; i++) {
         char coord_str[64];
         snprintf(coord_str, sizeof(coord_str), "%.6f,%.6f", points[i].lat, points[i].lon);
         writeSingleString(sock, h, coord_str);
     }
     
+    // Primeste sumarul rezultatului de la server
     char *total_dist_str = read_single_string(sock);
     char *point_cnt_resp = read_single_string(sock);
     char *seg_cnt_str = read_single_string(sock);
@@ -348,6 +400,7 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
     free(point_cnt_resp);
     free(seg_cnt_str);
     
+    // Daca exista segmente, primeste si distantele individuale pentru fiecare
     double *segment_distances = NULL;
     if (segment_count > 0) {
         segment_distances = malloc(sizeof(double) * segment_count);
@@ -360,6 +413,7 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
         }
     }
     
+    // Primeste informatii suplimentare privind distanta intre doua puncte
     char *direct_dist_str = read_single_string(sock);
     char *route_dist_str = read_single_string(sock);
     char *has_req_str = read_single_string(sock);
@@ -375,6 +429,7 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
     free(has_req_str);
     free(show_seg_resp);
     
+    // Afiseaza sumarul rezultatului
     snprintf(buf, sizeof(buf), "\n=== REZULTATE DE LA SERVER ===\n");
     write(STDOUT_FILENO, buf, strlen(buf));
     
@@ -384,6 +439,7 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
     snprintf(buf, sizeof(buf), "Distanta totala: %.2f km\n", total_distance);
     write(STDOUT_FILENO, buf, strlen(buf));
     
+    // Afiseaza optional distantele pe segmente
     if (show_segments_resp && segment_count > 0) {
         write(STDOUT_FILENO, "\n=== DISTANTE PE SEGMENTE ===\n", 30);
         double total = 0;
@@ -396,6 +452,7 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
         }
     }
     
+    // Afiseaza optional distanta directa si distanta pe traseu intre doua puncte
     if (has_distance_request) {
         write(STDOUT_FILENO, "\n=== DISTANTA INTRE PUNCTE ===\n", 30);
         snprintf(buf, sizeof(buf), "Distanta directa: %.2f km\n", direct_distance);
@@ -408,12 +465,14 @@ int send_points_to_server(pointMsgType *points, int point_count, const char *fil
     return 0;
 }
 
+// Citeste un fisier GEO si il transforma in puncte, in functie de extensie.
 int upload_geo_file(const char *filename, const char *bbox, double epsilon, 
                     int show_segments, int dist_idx1, int dist_idx2) {
     int point_count = 0;
     pointMsgType *points = NULL;
     char buf[256];
     
+    // Detecteaza tipul fisierului dupa extensie si apeleaza parserul potrivit
     const char *ext = strrchr(filename, '.');
     if (ext) {
         if (strcmp(ext, ".gpx") == 0 || strcmp(ext, ".GPX") == 0) {
@@ -439,13 +498,14 @@ int upload_geo_file(const char *filename, const char *bbox, double epsilon,
                                   show_segments, dist_idx1, dist_idx2);
 }
 
-
+// Afiseaza prompt-ul interactiv al shell-ului client
 void print_prompt(void) {
     char prompt[256];
     snprintf(prompt, sizeof(prompt), "\n%s@geoclient> ", current_user);
     write(STDOUT_FILENO, prompt, strlen(prompt));
 }
 
+// Realizeaza conexiunea TCP la server
 int connect_to_server(void) {
     int s;
     struct sockaddr_in servername;
@@ -465,6 +525,7 @@ int connect_to_server(void) {
     return s;
 }
 
+// Afiseaza lista de comenzi disponibile in shell-ul client
 void print_usage(void) {
     char help[] = 
         "\nComenzi disponibile:\n"
@@ -486,6 +547,7 @@ void print_usage(void) {
     write(STDOUT_FILENO, help, strlen(help));
 }
 
+// Parseaza puncte introduse direct din linia de comanda sub forma "lat,lon"
 int parse_points_from_args(char *line, pointMsgType **points) {
     pointMsgType *temp = malloc(sizeof(pointMsgType) * MAX_POINTS);
     if (!temp) return -1;
@@ -515,6 +577,7 @@ int parse_points_from_args(char *line, pointMsgType **points) {
     return point_count;
 }
 
+// Bucla principala a shell-ului interactiv al clientului
 void shell_loop(void) {
     char line[MAX_INPUT];
     
@@ -525,6 +588,7 @@ void shell_loop(void) {
         trim(line);
         if (!*line) continue;
         
+        // Comanda de iesire
         if (strcmp(line, "exit") == 0 || strcmp(line, "quit") == 0) {
             msgHeaderType h;
             h.clientID = session_id;
@@ -533,15 +597,18 @@ void shell_loop(void) {
             close(sock);
             break;
         }
+        // Comanda de ajutor
         else if (strcmp(line, "help") == 0) {
             print_usage();
             continue;
         }
+        // Comanda de upload cu optiuni
         else if (strncmp(line, "upload", 6) == 0) {
             char *cmd = strdup(line);
             char *args[20];
             int argc = 0;
             char *token = strtok(cmd, " ");
+            
             while (token && argc < 20) {
                 args[argc++] = token;
                 token = strtok(NULL, " ");
@@ -553,6 +620,7 @@ void shell_loop(void) {
             int dist_idx1 = 0, dist_idx2 = 0;
             char *filename = NULL;
             
+            // Parseaza optiunile primite dupa upload
             for (int i = 1; i < argc; i++) {
                 if (strcmp(args[i], "--bbox") == 0 && i + 1 < argc) {
                     bbox = args[++i];
@@ -575,6 +643,7 @@ void shell_loop(void) {
             }
             free(cmd);
         }
+        // Daca nu este o comanda, incearca sa interpreteze linia ca lista de puncte introduse manual
         else {
             pointMsgType *points = NULL;
             int point_count = parse_points_from_args(line, &points);
@@ -595,9 +664,9 @@ void shell_loop(void) {
     }
 }
 
-
+// Afiseaza meniul initial de autentificare
 void print_menu(void) {
-    char menu[] = "\n=== CLIENT GEOSPAȚIAL ===\n"
+    char menu[] = "\n=== CLIENT GEOSPATIAL ===\n"
                   "1. Autentificare\n"
                   "2. Creare cont nou\n"
                   "3. Iesire\n"
@@ -605,18 +674,20 @@ void print_menu(void) {
     write(STDOUT_FILENO, menu, strlen(menu));
 }
 
-
+// Punctul de intrare al aplicatiei client
 int main(void) {
     char input[16];
     int authenticated = 0;
     int choice;
     
+    // Incearca sa se conecteze la server
     sock = connect_to_server();
     if (sock < 0) {
         write(STDERR_FILENO, "Nu se poate conecta la server!\n", 32);
         return 1;
     }
     
+    // Meniu initial pana la autentificare reusita sau iesire
     while (!authenticated) {
         print_menu();
         
@@ -648,6 +719,7 @@ int main(void) {
         }
     }
     
+    // Dupa autentificare, intra in shell-ul interactiv
     shell_loop();
     
     char bye[] = "\nClient inchis.\n";

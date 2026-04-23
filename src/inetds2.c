@@ -1,9 +1,11 @@
-#include "../include/logging.h"
-#include "../include/proto.h"
-#include "../include/config.h"
-#include <fcntl.h>
-#include <stdlib.h>
+#include "../include/logging.h"   // Pentru logarea evenimentelor si erorilor serverului
+#include "../include/proto.h"     // Pentru structurile de mesaje, constantele OPR_* si functiile de comunicare
+#include "../include/config.h"    // Pentru acces la configuratia globala a serverului
+#include <fcntl.h>                // Pentru constante si operatii asociate fisierelor
+#include <stdlib.h>               // Pentru malloc(), free(), atoi() si atof()
 
+// Declaratii externe pentru functiile implementate in alte module.
+// Acestea sunt folosite aici pentru autentificare, sesiuni, statistici si coada de task-uri.
 extern int session_create(const char *username);
 extern int session_validate(int session_id);
 extern void session_invalidate(int session_id);
@@ -22,21 +24,28 @@ extern int queue_add_task_full(const char *filename, int client_id, int sock_fd,
                                 int show_segments, int dist_idx1, int dist_idx2, 
                                 pointMsgType *points);
 
+// Creeaza un socket TCP/IP, il configureaza pe portul primit si face bind pe toate interfetele.
+// Parametrul reuse permite reutilizarea rapida a adresei dupa restart.
 int inet_socket(uint16_t port, short reuse) {
     int sock;
     struct sockaddr_in name;
     
+    // Creeaza socket-ul pentru comunicatie IPv4 orientata pe conexiune
     sock = socket(PF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
     
+    // Activeaza optiunea SO_REUSEADDR daca este ceruta
     if (reuse) {
         int reuseAddrON = 1;
         setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuseAddrON, sizeof(reuseAddrON));
     }
     
+    // Configureaza adresa locala pe care va asculta serverul
     name.sin_family = AF_INET;
     name.sin_port = htons(port);
     name.sin_addr.s_addr = htonl(INADDR_ANY);
+    
+    // Asociaza socket-ul cu portul si adresa configurate
     if (bind(sock, (struct sockaddr *)&name, sizeof(name)) < 0) {
         close(sock);
         return -1;
@@ -45,6 +54,8 @@ int inet_socket(uint16_t port, short reuse) {
     return sock;
 }
 
+// Thread-ul principal pentru serverul INET.
+// Gestioneaza conexiuni noi si comenzile trimise de clientii conectati.
 void *inet_main(void *args) {
     int port = *((int *)args);
     int sock;
@@ -53,35 +64,44 @@ void *inet_main(void *args) {
     struct sockaddr_in clientname;
     char logbuf[256];
     
+    // Afiseaza un mesaj de pornire pentru serverul TCP/IP
     snprintf(logbuf, sizeof(logbuf), "[INET] Starting INET server on port %d...", port);
     write(STDOUT_FILENO, logbuf, strlen(logbuf));
     write(STDOUT_FILENO, "\n", 1);
     
+    // Creeaza socket-ul de ascultare
     sock = inet_socket(port, 1);
     if (sock < 0) {
         write(STDOUT_FILENO, "[INET] Failed to create socket\n", 32);
         pthread_exit(NULL);
     }
     
+    // Trecerea socket-ului in stare de listen pentru clienti multipli
     if (listen(sock, g_config.max_clients) < 0) {
         write(STDOUT_FILENO, "[INET] Failed to listen\n", 24);
         pthread_exit(NULL);
     }
     
+    // Initializarea multimii de descriptori monitorizati cu select()
     FD_ZERO(&active_fd_set);
     FD_SET(sock, &active_fd_set);
     
+    // Bucla principala a serverului
     while (1) {
         int i;
         read_fd_set = active_fd_set;
         
+        // Asteapta activitate pe oricare dintre socket-urile monitorizate
         if (select(FD_SETSIZE, &read_fd_set, NULL, NULL, NULL) < 0) {
             continue;
         }
         
+        // Verifica fiecare descriptor care a devenit activ
         for (i = 0; i < FD_SETSIZE; ++i) {
             if (FD_ISSET(i, &read_fd_set)) {
                 if (i == sock) {
+                    // Cazul in care descriptorul activ este socket-ul de ascultare:
+                    // a aparut o noua conexiune de la un client
                     int new_fd;
                     size = sizeof(clientname);
                     new_fd = accept(sock, (struct sockaddr *)&clientname, (socklen_t *)&size);
@@ -93,10 +113,12 @@ void *inet_main(void *args) {
                         write(STDOUT_FILENO, "\n", 1);
                     }
                 } else {
+                    // Cazul in care descriptorul activ apartine unui client deja conectat
                     msgHeaderType h = peekMsgHeader(i);
                     int operation = h.opID;
                     int client_id = h.clientID;
                     
+                    // Client nou fara ID valid: serverul ii aloca unul
                     if (operation == 0 && client_id == 0) {
                         msgIntType dummy;
                         readSingleInt(i, &dummy);
@@ -107,6 +129,7 @@ void *inet_main(void *args) {
                         write(STDOUT_FILENO, "\n", 1);
                     }
                     else if (operation == OPR_LOGIN) {
+                        // Tratarea cererii de autentificare
                         msgStringType user, pass;
                         if (readSingleString(i, &user) < 0 || readSingleString(i, &pass) < 0) {
                             char err_msg[] = "Eroare la autentificare";
@@ -116,25 +139,31 @@ void *inet_main(void *args) {
                         
                         int auth_result = authenticate_user(user.msg, pass.msg);
                         if (auth_result) {
+                            // Daca autentificarea reuseste, se creeaza o sesiune noua
                             int session_id = session_create(user.msg);
                             writeSingleInt(i, h, session_id);
                             snprintf(logbuf, sizeof(logbuf), "[INET] User %s authenticated, session=%d", user.msg, session_id);
                             write(STDOUT_FILENO, logbuf, strlen(logbuf));
                             write(STDOUT_FILENO, "\n", 1);
                             
+                            // Se salveaza actiunea in istoric
                             char hist_entry[256];
                             snprintf(hist_entry, sizeof(hist_entry), "Login: %s", user.msg);
                             add_to_history(hist_entry);
                         } else {
+                            // Daca autentificarea esueaza, se trimite 0 ca ID de sesiune
                             writeSingleInt(i, h, 0);
                             snprintf(logbuf, sizeof(logbuf), "[INET] Auth failed for user %s", user.msg);
                             write(STDOUT_FILENO, logbuf, strlen(logbuf));
                             write(STDOUT_FILENO, "\n", 1);
                         }
+                        
+                        // Eliberarea memoriei alocate pentru stringurile citite
                         free(user.msg);
                         free(pass.msg);
                     }
                     else if (operation == OPR_REGISTER) {
+                        // Tratarea cererii de inregistrare utilizator nou
                         msgStringType user, pass;
                         if (readSingleString(i, &user) < 0 || readSingleString(i, &pass) < 0) {
                             char err_msg[] = "Eroare la inregistrare";
@@ -144,32 +173,41 @@ void *inet_main(void *args) {
                         
                         int reg_result = add_user_server(user.msg, pass.msg);
                         if (reg_result) {
+                            // Dupa inregistrare reusita, utilizatorul primeste si o sesiune
                             int session_id = session_create(user.msg);
                             writeSingleInt(i, h, session_id);
                             snprintf(logbuf, sizeof(logbuf), "[INET] New user registered: %s, session=%d", user.msg, session_id);
                             write(STDOUT_FILENO, logbuf, strlen(logbuf));
                             write(STDOUT_FILENO, "\n", 1);
                             
+                            // Se adauga evenimentul in istoric
                             char hist_entry[256];
                             snprintf(hist_entry, sizeof(hist_entry), "Register: %s", user.msg);
                             add_to_history(hist_entry);
                         } else {
+                            // Inregistrarea a esuat
                             writeSingleInt(i, h, 0);
                             write(STDOUT_FILENO, "[INET] Registration failed\n", 28);
                         }
+                        
                         free(user.msg);
                         free(pass.msg);
                     }
                     else if (operation == OPR_UPLOAD_GEO) {
+                        // Tratarea cererii de upload pentru date geografice
                         int session_id = client_id;
+                        
+                        // Verifica daca sesiunea clientului este valida
                         if (!session_validate(session_id)) {
                             char err_msg[] = "Sesiune invalida";
                             writeSingleString(i, h, err_msg);
                             continue;
                         }
                         
+                        // Actualizeaza momentul ultimei activitati pentru sesiune
                         session_update_activity(session_id);
                         
+                        // Citeste numele fisierului asociat upload-ului
                         msgStringType filename;
                         if (readSingleString(i, &filename) < 0) {
                             char err_msg[] = "Eroare la citirea numelui fisierului";
@@ -177,6 +215,7 @@ void *inet_main(void *args) {
                             continue;
                         }
                         
+                        // Citeste numarul de puncte trimise de client
                         msgStringType point_count_str;
                         if (readSingleString(i, &point_count_str) < 0) {
                             free(filename.msg);
@@ -187,6 +226,7 @@ void *inet_main(void *args) {
                         int point_count = atoi(point_count_str.msg);
                         free(point_count_str.msg);
                         
+                        // Validare simpla pentru numarul de puncte
                         if (point_count <= 0 || point_count > 100000) {
                             free(filename.msg);
                             char err_msg[] = "Numar invalid de puncte";
@@ -194,6 +234,7 @@ void *inet_main(void *args) {
                             continue;
                         }
                         
+                        // Citeste optional bounding box-ul cerut de client
                         msgStringType bbox_str;
                         char bbox[128] = "";
                         if (readSingleString(i, &bbox_str) >= 0 && strlen(bbox_str.msg) > 0) {
@@ -201,6 +242,7 @@ void *inet_main(void *args) {
                             free(bbox_str.msg);
                         }
                         
+                        // Citeste optional epsilon pentru simplificare
                         msgStringType epsilon_str;
                         double epsilon = -1;
                         if (readSingleString(i, &epsilon_str) >= 0 && strlen(epsilon_str.msg) > 0) {
@@ -208,6 +250,7 @@ void *inet_main(void *args) {
                             free(epsilon_str.msg);
                         }
                         
+                        // Citeste flag-ul care indica daca trebuie afisate segmentele
                         msgStringType segments_flag_str;
                         int show_segments = 0;
                         if (readSingleString(i, &segments_flag_str) >= 0 && strlen(segments_flag_str.msg) > 0) {
@@ -215,6 +258,7 @@ void *inet_main(void *args) {
                             free(segments_flag_str.msg);
                         }
                         
+                        // Citeste optional doi indici folositi pentru calculul unei distante punct-la-punct
                         msgStringType dist1_str, dist2_str;
                         int dist_idx1 = 0, dist_idx2 = 0;
                         if (readSingleString(i, &dist1_str) >= 0 && strlen(dist1_str.msg) > 0) {
@@ -226,6 +270,7 @@ void *inet_main(void *args) {
                             free(dist2_str.msg);
                         }
                         
+                        // Aloca memorie pentru toate punctele primite de la client
                         pointMsgType *points = malloc(sizeof(pointMsgType) * point_count);
                         if (!points) {
                             free(filename.msg);
@@ -234,6 +279,7 @@ void *inet_main(void *args) {
                             continue;
                         }
                         
+                        // Citeste fiecare punct transmis sub forma de string "lat,lon"
                         int points_read = 0;
                         for (int p = 0; p < point_count; p++) {
                             msgStringType coord_str;
@@ -243,6 +289,7 @@ void *inet_main(void *args) {
                             points_read++;
                         }
                         
+                        // Daca nu s-au citit toate punctele, upload-ul este considerat invalid
                         if (points_read != point_count) {
                             free(points);
                             free(filename.msg);
@@ -251,18 +298,22 @@ void *inet_main(void *args) {
                             continue;
                         }
                         
+                        // Adauga task-ul complet in coada de procesare
                         queue_add_task_full(filename.msg, session_id, i, point_count,
                                             bbox, epsilon, show_segments,
                                             dist_idx1, dist_idx2, points);
                         
+                        // Numele fisierului nu mai este necesar local dupa adaugarea task-ului
                         free(filename.msg);
                         
+                        // Salveaza operatia in istoric
                         char hist_entry[256];
                         snprintf(hist_entry, sizeof(hist_entry), "Upload: %s (%d puncte)", 
                                  filename.msg, point_count);
                         add_to_history(hist_entry);
                     }
                     else if (operation == OPR_BYE) {
+                        // Tratarea cererii de deconectare
                         int session_id = client_id;
                         if (session_id > 0) {
                             session_invalidate(session_id);
@@ -274,6 +325,7 @@ void *inet_main(void *args) {
                         stats_decrement_clients();
                     }
                     else {
+                        // Operatie necunoscuta sau neimplementata
                         char err_msg[] = "Comanda necunoscuta";
                         writeSingleString(i, h, err_msg);
                     }
