@@ -1,10 +1,9 @@
-
 CC = gcc
 CFLAGS = -Wall -Wextra -Wpedantic -Werror -g -std=c11 -D_POSIX_C_SOURCE=200809L
-LDFLAGS = -pthread -lm
+LDFLAGS = -pthread -lm -lgeos_c
 INCLUDES = -I./include
 
-SRCS = src/threeds.c src/unixds.c src/inetds2.c src/geo_processor.c src/proto.c src/logging.c src/file_io.c src/server_common.c
+SRCS = src/threeds.c src/unixds.c src/inetds2.c src/geo_processor.c src/proto.c src/logging.c src/file_io.c src/server_common.c src/config.c
 TARGET = serverds
 
 CLIENT_SRCS = clients/inetclient.c src/proto.c src/geo_processor.c src/logging.c src/file_io.c

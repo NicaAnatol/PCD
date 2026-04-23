@@ -1,6 +1,7 @@
 
 #include "../include/proto.h"
 #include "../include/logging.h"
+#include <../include/config.h>
 #include <sys/time.h>
 
 extern void get_stats(server_stats_t *stats);
@@ -34,11 +35,12 @@ void format_clients_response(char *buffer, size_t bufsize) {
     server_stats_t stats;
     get_stats(&stats);
     snprintf(buffer, 512,
-             "Clienti activi: %d\n"
-             "Procese active: %d\n"
-             "Socket UNIX: /tmp/geods\n"
-             "Port INET: 18081\n",
-             stats.active_clients, stats.active_processes);
+         "Clienti activi: %d\n"
+         "Procese active: %d\n"
+         "Socket UNIX: %s\n"
+         "Port INET: %d\n",
+         stats.active_clients, stats.active_processes,
+         g_config.unix_socket, g_config.inet_port);
 }
 
 void *unix_main(void *args) {
@@ -66,17 +68,19 @@ void *unix_main(void *args) {
     unlink(socket_path);
     
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        log_message("[UNIX] bind failed");
-        pthread_exit(NULL);
+    char errbuf[256];
+    snprintf(errbuf, sizeof(errbuf), "[UNIX] bind failed: %s", strerror(errno));
+    log_message(errbuf);
+    pthread_exit(NULL);
     }
     
-    if (listen(sock, 5) < 0) {
+    if (listen(sock, g_config.max_clients) < 0) {
         log_message("[UNIX] listen failed");
         pthread_exit(NULL);
     }
     
     char logbuf[256];
-    snprintf(logbuf, sizeof(logbuf), "[UNIX] Server listening on %s", socket_path);
+    snprintf(logbuf, sizeof(logbuf), "[UNIX] Trying to bind to path: '%s'", addr.sun_path);
     log_message(logbuf);
     
     while (1) {

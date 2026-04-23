@@ -1,11 +1,71 @@
 #include "../include/logging.h"
 #include "../include/proto.h"
-
+#include <geos_c.h>
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
+
+static GEOSContextHandle_t geos_ctx = NULL;
+
+
+void geos_init(void) {
+    geos_ctx = GEOS_init_r();
+    if (!geos_ctx) {
+        log_message("[GEOS] Failed to initialize GEOS");
+    } else {
+        log_message("[GEOS] GEOS initialized successfully");
+    }
+}
+
+void geos_cleanup(void) {
+    if (geos_ctx) {
+        GEOS_finish_r(geos_ctx);
+        geos_ctx = NULL;
+    }
+}
+
+static GEOSGeometry* points_to_linestring(pointMsgType *points, int count) {
+    if (!geos_ctx || count < 2) return NULL;
+    
+    GEOSCoordSequence *seq = GEOSCoordSeq_create_r(geos_ctx, count, 2);
+    if (!seq) return NULL;
+    
+    for (int i = 0; i < count; i++) {
+        GEOSCoordSeq_setX_r(geos_ctx, seq, i, points[i].lon);
+        GEOSCoordSeq_setY_r(geos_ctx, seq, i, points[i].lat);
+    }
+    
+    return GEOSGeom_createLineString_r(geos_ctx, seq);
+}
+
 double haversine_distance(pointMsgType p1, pointMsgType p2) {
+    if (geos_ctx) {
+
+        GEOSCoordSequence *seq = GEOSCoordSeq_create_r(geos_ctx, 2, 2);
+        if (seq) {
+            GEOSCoordSeq_setX_r(geos_ctx, seq, 0, p1.lon);
+            GEOSCoordSeq_setY_r(geos_ctx, seq, 0, p1.lat);
+            GEOSCoordSeq_setX_r(geos_ctx, seq, 1, p2.lon);
+            GEOSCoordSeq_setY_r(geos_ctx, seq, 1, p2.lat);
+            
+            GEOSGeometry *g1 = GEOSGeom_createPoint_r(geos_ctx, seq);
+            GEOSCoordSequence *seq2 = GEOSCoordSeq_create_r(geos_ctx, 2, 2);
+            GEOSCoordSeq_setX_r(geos_ctx, seq2, 0, p2.lon);
+            GEOSCoordSeq_setY_r(geos_ctx, seq2, 0, p2.lat);
+            GEOSGeometry *g2 = GEOSGeom_createPoint_r(geos_ctx, seq2);
+            
+            double dist;
+            GEOSDistance_r(geos_ctx, g1, g2, &dist);
+            
+            GEOSGeom_destroy_r(geos_ctx, g1);
+            GEOSGeom_destroy_r(geos_ctx, g2);
+            
+            return dist;
+        }
+    }
+    
+  
     double R = 6371.0;
     double lat1 = p1.lat * M_PI / 180.0;
     double lat2 = p2.lat * M_PI / 180.0;
@@ -22,6 +82,18 @@ double haversine_distance(pointMsgType p1, pointMsgType p2) {
 
 double calculate_distance(pointMsgType *points, int count) {
     if (count < 2) return 0.0;
+    
+    if (geos_ctx && count >= 2) {
+        GEOSGeometry *line = points_to_linestring(points, count);
+        if (line) {
+            double length;
+            GEOSLength_r(geos_ctx, line, &length);
+            GEOSGeom_destroy_r(geos_ctx, line);
+            return length;
+        }
+    }
+    
+
     double total = 0.0;
     for (int i = 0; i < count - 1; i++) {
         total += haversine_distance(points[i], points[i+1]);
@@ -83,6 +155,35 @@ int douglas_peucker(pointMsgType *points, int count, double epsilon, pointMsgTyp
         return count;
     }
     
+    if (geos_ctx) {
+
+        GEOSGeometry *line = points_to_linestring(points, count);
+        if (line) {
+            GEOSGeometry *simplified_geom = GEOSSimplify_r(geos_ctx, line, epsilon);
+            if (simplified_geom) {
+                int simplified_count = GEOSGetNumCoordinates_r(geos_ctx, simplified_geom);
+                if (simplified_count > 0 && simplified_count < count) {
+                    *simplified = malloc(sizeof(pointMsgType) * simplified_count);
+                    if (*simplified) {
+                        const GEOSCoordSequence *seq = GEOSGeom_getCoordSeq_r(geos_ctx, simplified_geom);
+                        for (int i = 0; i < simplified_count; i++) {
+                            double x, y;
+                            GEOSCoordSeq_getX_r(geos_ctx, seq, i, &x);
+                            GEOSCoordSeq_getY_r(geos_ctx, seq, i, &y);
+                            (*simplified)[i].lat = y;
+                            (*simplified)[i].lon = x;
+                        }
+                    }
+                    GEOSGeom_destroy_r(geos_ctx, simplified_geom);
+                    GEOSGeom_destroy_r(geos_ctx, line);
+                    return simplified_count;
+                }
+                GEOSGeom_destroy_r(geos_ctx, simplified_geom);
+            }
+            GEOSGeom_destroy_r(geos_ctx, line);
+        }
+    }
+
     int *keep = calloc(count, sizeof(int));
     if (!keep) return -1;
     

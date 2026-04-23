@@ -74,29 +74,5 @@ int writeSingleString(int sock, msgHeaderType h, char *str) {
     return nb;
 }
 
-int readGeoPoints(int sock, pointMsgType **points, int *count) {
-    msgIntType m;
-    ssize_t nb = readSingleInt(sock, &m);
-    if (nb < 0) return -1;
-    
-    *count = m.msg;
-    if (*count <= 0 || *count > 100000) return -1;
-    
-    *points = malloc(sizeof(pointMsgType) * (*count));
-    if (!*points) return -1;
-    
-    nb = recv(sock, *points, sizeof(pointMsgType) * (*count), MSG_WAITALL);
-    if (nb <= 0) {
-        free(*points);
-        *points = NULL;
-        return -1;
-    }
-    return nb;
-}
 
-int writeGeoStats(int sock, msgHeaderType h, geoStatsMsgType *stats) {
-    (void)h;
-    ssize_t nb = send(sock, stats, sizeof(geoStatsMsgType), 0);
-    if (nb == -1 || nb == 0) return -1;
-    return nb;
-}
+

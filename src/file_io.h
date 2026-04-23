@@ -7,7 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
-
+#include <../include/config.h>
 size_t myRead(char *path, char **buffer, size_t size);
 size_t myWrite(char *path, char *buffer, size_t size);
 

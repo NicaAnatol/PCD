@@ -1,19 +1,15 @@
-
 #include "../include/logging.h"
 #include "../include/proto.h"
 #include <fcntl.h>
 #include <stdlib.h>
 
-/* Statistici globale */
 static server_stats_t g_stats = {0, 0, 0, 0.0, ""};
 static pthread_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Gestionare sesiuni */
 static client_session_t *sessions = NULL;
 static int next_session_id = 1000;
 static pthread_mutex_t session_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Istoric comenzi cu timestamp */
 #define MAX_HISTORY 100
 typedef struct {
     char command[512];
@@ -25,14 +21,21 @@ static history_entry_t history[MAX_HISTORY];
 static int history_count = 0;
 static pthread_mutex_t history_mutex = PTHREAD_MUTEX_INITIALIZER;
 
-/* Coada FIFO */
 typedef struct queue_task {
     int task_id;
     char filename[512];
+    char bbox[128];
+    double epsilon;
+    int show_segments;
+    int dist_idx1;
+    int dist_idx2;
     int client_id;
+    int sock_fd;
     int status;
     time_t start_time;
     time_t end_time;
+    pointMsgType *points;
+    int point_count;
     struct queue_task *next;
 } queue_task_t;
 
@@ -42,10 +45,8 @@ static int next_task_id = 1;
 static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
 
-/* Forward declaration */
 void add_to_history(const char *command, long exec_time_ms);
 
-/* Obtine calea fisierului cu parole */
 static const char* get_password_file(void) {
     const char *env_file = getenv("GEO_PASSWD_FILE");
     if (env_file != NULL && env_file[0] != '\0') {
@@ -54,7 +55,6 @@ static const char* get_password_file(void) {
     return "passwords.txt";
 }
 
-/* ==================== FUNCTII ISTORIC ==================== */
 void add_to_history(const char *command, long exec_time_ms) {
     pthread_mutex_lock(&history_mutex);
     if (history_count < MAX_HISTORY) {
@@ -106,29 +106,151 @@ void format_avg_time_response(char *buffer, size_t bufsize) {
     if (history_count == 0) {
         snprintf(buffer, bufsize, "Nicio comanda procesata inca\n");
     } else {
-        long total_time = 0;
+        long total_time_ms = 0;
         for (int i = 0; i < history_count; i++) {
-            total_time += history[i].execution_time_ms;
+            total_time_ms += history[i].execution_time_ms;
         }
-        double avg_time = (double)total_time / (double)history_count / 1000.0;
+        double avg_time_sec = (double)total_time_ms / (double)history_count / 1000.0;
         snprintf(buffer, bufsize, "Total comenzi: %d\nTimp mediu: %.2f secunde\n", 
-                 history_count, avg_time);
+                 history_count, avg_time_sec);
     }
     pthread_mutex_unlock(&history_mutex);
 }
 
-/* ==================== COADA FIFO ==================== */
-int queue_add_task(const char *filename, int client_id) {
+static void process_task_real(queue_task_t *task) {
+    pointMsgType *points = task->points;
+    int point_count = task->point_count;
+    
+    if (task->bbox[0] != '\0') {
+        double min_lat, max_lat, min_lon, max_lon;
+        if (sscanf(task->bbox, "%lf,%lf,%lf,%lf", &min_lat, &max_lat, &min_lon, &max_lon) == 4) {
+            pointMsgType *filtered = malloc(sizeof(pointMsgType) * point_count);
+            int filtered_count = 0;
+            for (int i = 0; i < point_count; i++) {
+                if (points[i].lat >= min_lat && points[i].lat <= max_lat &&
+                    points[i].lon >= min_lon && points[i].lon <= max_lon) {
+                    filtered[filtered_count++] = points[i];
+                }
+            }
+            if (filtered_count > 0) {
+                free(points);
+                points = filtered;
+                point_count = filtered_count;
+            } else {
+                free(filtered);
+            }
+        }
+    }
+    
+    if (task->epsilon > 0 && point_count > 2) {
+        pointMsgType *simplified = NULL;
+        int simplified_count = douglas_peucker(points, point_count, task->epsilon, &simplified);
+        if (simplified_count > 0 && simplified_count < point_count) {
+            free(points);
+            points = simplified;
+            point_count = simplified_count;
+        } else if (simplified_count > 0) {
+            free(simplified);
+        }
+    }
+    
+    double total_distance = 0.0;
+    double segment_distances[1000];
+    int segment_count = point_count - 1;
+    
+    for (int i = 0; i < point_count - 1; i++) {
+        double dist = haversine_distance(points[i], points[i+1]);
+        segment_distances[i] = dist;
+        total_distance += dist;
+    }
+    
+    double direct_distance = 0.0;
+    double route_distance = 0.0;
+    int has_distance_request = (task->dist_idx1 > 0 && task->dist_idx2 > 0 && 
+                                 task->dist_idx1 <= point_count && task->dist_idx2 <= point_count);
+    
+    if (has_distance_request) {
+        int idx1 = task->dist_idx1 - 1;
+        int idx2 = task->dist_idx2 - 1;
+        direct_distance = haversine_distance(points[idx1], points[idx2]);
+        
+        int start = (idx1 < idx2) ? idx1 : idx2;
+        int end = (idx1 > idx2) ? idx1 : idx2;
+        route_distance = 0.0;
+        for (int i = start; i < end; i++) {
+            route_distance += haversine_distance(points[i], points[i+1]);
+        }
+    }
+    
+    msgHeaderType h;
+    h.clientID = task->client_id;
+    h.opID = OPR_UPLOAD_GEO;
+    
+    char total_dist_str[64], point_cnt_str[64], seg_cnt_str[64];
+    char direct_dist_str[64], route_dist_str[64], has_req_str[64];
+    char show_seg_str[16];
+    
+    snprintf(total_dist_str, sizeof(total_dist_str), "%.6f", total_distance);
+    snprintf(point_cnt_str, sizeof(point_cnt_str), "%d", point_count);
+    snprintf(seg_cnt_str, sizeof(seg_cnt_str), "%d", segment_count);
+    snprintf(direct_dist_str, sizeof(direct_dist_str), "%.6f", direct_distance);
+    snprintf(route_dist_str, sizeof(route_dist_str), "%.6f", route_distance);
+    snprintf(has_req_str, sizeof(has_req_str), "%d", has_distance_request);
+    snprintf(show_seg_str, sizeof(show_seg_str), "%d", task->show_segments);
+    
+    writeSingleString(task->sock_fd, h, total_dist_str);
+    writeSingleString(task->sock_fd, h, point_cnt_str);
+    writeSingleString(task->sock_fd, h, seg_cnt_str);
+    
+    for (int i = 0; i < segment_count; i++) {
+        char seg_str[64];
+        snprintf(seg_str, sizeof(seg_str), "%.6f", segment_distances[i]);
+        writeSingleString(task->sock_fd, h, seg_str);
+    }
+    
+    writeSingleString(task->sock_fd, h, direct_dist_str);
+    writeSingleString(task->sock_fd, h, route_dist_str);
+    writeSingleString(task->sock_fd, h, has_req_str);
+    writeSingleString(task->sock_fd, h, show_seg_str);
+    
+    stats_add_processed(point_count, total_distance, task->filename);
+    
+    char logbuf[256];
+    snprintf(logbuf, sizeof(logbuf), "[GEO] Task %d: %d points, distance=%.2f km", 
+             task->task_id, point_count, total_distance);
+    log_message(logbuf);
+    
+    free(points);
+}
+
+int queue_add_task_full(const char *filename, int client_id, int sock_fd, int point_count,
+                        const char *bbox, double epsilon, int show_segments,
+                        int dist_idx1, int dist_idx2, pointMsgType *points) {
     queue_task_t *task = malloc(sizeof(queue_task_t));
     if (!task) return -1;
     
     task->task_id = next_task_id++;
     strncpy(task->filename, filename, sizeof(task->filename) - 1);
     task->filename[sizeof(task->filename) - 1] = '\0';
+    
+    if (bbox) {
+        strncpy(task->bbox, bbox, sizeof(task->bbox) - 1);
+        task->bbox[sizeof(task->bbox) - 1] = '\0';
+    } else {
+        task->bbox[0] = '\0';
+    }
+    
+    task->epsilon = epsilon;
+    task->show_segments = show_segments;
+    task->dist_idx1 = dist_idx1;
+    task->dist_idx2 = dist_idx2;
     task->client_id = client_id;
+    task->sock_fd = sock_fd;
     task->status = 0;
     task->start_time = time(NULL);
     task->end_time = 0;
+    task->points = points;
+    task->point_count = point_count;
     task->next = NULL;
     
     pthread_mutex_lock(&queue_mutex);
@@ -142,10 +264,15 @@ int queue_add_task(const char *filename, int client_id) {
     pthread_mutex_unlock(&queue_mutex);
     
     char logbuf[256];
-    snprintf(logbuf, sizeof(logbuf), "[QUEUE] Task %d added: %s", task->task_id, filename);
+    snprintf(logbuf, sizeof(logbuf), "[QUEUE] Task %d added: %s (%d points)", 
+             task->task_id, filename, point_count);
     log_message(logbuf);
     
     return task->task_id;
+}
+
+int queue_add_task(const char *filename, int client_id) {
+    return queue_add_task_full(filename, client_id, -1, 0, NULL, -1, 0, 0, 0, NULL);
 }
 
 void format_queue_response(char *buffer, size_t bufsize) {
@@ -168,8 +295,8 @@ void format_queue_response(char *buffer, size_t bufsize) {
             }
             
             char line[600];
-            snprintf(line, sizeof(line), "Task %d: %s [%s]\n", 
-                     curr->task_id, curr->filename, status_str);
+            snprintf(line, sizeof(line), "Task %d: %s [%s] (%d puncte)\n", 
+                     curr->task_id, curr->filename, status_str, curr->point_count);
             strncat(buffer, line, bufsize - strlen(buffer) - 1);
             curr = curr->next;
             count++;
@@ -181,6 +308,7 @@ void format_queue_response(char *buffer, size_t bufsize) {
 void *queue_processor(void *arg) {
     (void)arg;
     char logbuf[128];
+    char hist_entry[600];
     
     while (1) {
         pthread_mutex_lock(&queue_mutex);
@@ -196,24 +324,29 @@ void *queue_processor(void *arg) {
         pthread_mutex_unlock(&queue_mutex);
         
         task->status = 1;
-        snprintf(logbuf, sizeof(logbuf), "[QUEUE] Processing task %d", task->task_id);
+        snprintf(logbuf, sizeof(logbuf), "[QUEUE] Processing task %d (%d points)", 
+                 task->task_id, task->point_count);
         log_message(logbuf);
         
-        sleep(2);
+        process_task_real(task);
         
         task->status = 2;
         task->end_time = time(NULL);
         
-        snprintf(logbuf, sizeof(logbuf), "[QUEUE] Task %d completed", task->task_id);
+        long exec_time_ms = (task->end_time - task->start_time) * 1000;
+        snprintf(logbuf, sizeof(logbuf), "[QUEUE] Task %d completed in %ld ms", 
+                 task->task_id, exec_time_ms);
         log_message(logbuf);
         
-        add_to_history(task->filename, (task->end_time - task->start_time) * 1000);
+        snprintf(hist_entry, sizeof(hist_entry), "Task %d: %s (%d puncte)", 
+                 task->task_id, task->filename, task->point_count);
+        add_to_history(hist_entry, exec_time_ms);
+        
         free(task);
     }
     return NULL;
 }
 
-/* ==================== FUNCTII SESIUNE ==================== */
 int session_create(const char *username) {
     pthread_mutex_lock(&session_mutex);
     
@@ -298,7 +431,6 @@ void session_update_activity(int session_id) {
     pthread_mutex_unlock(&session_mutex);
 }
 
-/* ==================== AUTENTIFICARE ==================== */
 int authenticate_user(const char *user, const char *pass) {
     const char *passwd_file = get_password_file();
     int fd = open(passwd_file, O_RDONLY);
@@ -361,7 +493,6 @@ int add_user_server(const char *user, const char *pass) {
     return 1;
 }
 
-/* ==================== STATISTICI ==================== */
 void stats_increment_clients(void) {
     pthread_mutex_lock(&stats_mutex);
     g_stats.active_clients++;
@@ -380,12 +511,7 @@ void stats_add_processed(int points, double distance, const char *filename) {
     g_stats.total_processed_distance += distance;
     strncpy(g_stats.last_upload, filename, sizeof(g_stats.last_upload) - 1);
     pthread_mutex_unlock(&stats_mutex);
-    
-    char history_entry[512];
-    snprintf(history_entry, sizeof(history_entry), "Upload: %s (%d pts)", filename, points);
-    add_to_history(history_entry, 0);
 }
-
 void stats_increment_processes(void) {
     pthread_mutex_lock(&stats_mutex);
     g_stats.active_processes++;
@@ -404,7 +530,6 @@ void get_stats(server_stats_t *stats) {
     pthread_mutex_unlock(&stats_mutex);
 }
 
-/* ==================== LISTA SESSIONURI ==================== */
 void format_sessions_response(char *buffer, size_t bufsize) {
     pthread_mutex_lock(&session_mutex);
     buffer[0] = '\0';
@@ -432,7 +557,6 @@ void format_sessions_response(char *buffer, size_t bufsize) {
     pthread_mutex_unlock(&session_mutex);
 }
 
-/* Termina o sesiune specifica */
 int terminate_session(int session_id) {
     pthread_mutex_lock(&session_mutex);
     client_session_t *curr = sessions;
