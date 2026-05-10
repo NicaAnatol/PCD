@@ -72,11 +72,35 @@
 #define OPR_LOGIN       10   // autentificare utilizator
 #define OPR_REGISTER    11   // inregistrare utilizator
 
+// New opcodes for task management
+#define OPR_CHECK_TASK    20
+#define OPR_GET_RESULT    21
+#define OPR_BLOCK_IP      30
+#define OPR_UNBLOCK_IP    31
+#define OPR_CANCEL_TASK   32
+#define OPR_UPLOAD_FILE   50
+#define OPR_DOWNLOAD_FILE 51
+typedef struct task_result {
+    char total_distance[64];
+    char point_count[32];
+    char segment_count[32];
+    char segment_distances[1000][64]; // max 1000 segments
+    int segment_cnt;
+    char direct_distance[64];
+    char route_distance[64];
+    char has_request[8];
+    char show_segments[8];
+    char output_path[512];
+    int ready;  // 1 if result is available
+} task_result_t;
+
 // Header comun pentru toate mesajele trimise prin socket
+// MODIFIED: Adăugat câmpul requestID pentru corelare cerere-răspuns
 typedef struct msgHeaderType {
     int msgSize;    // dimensiunea mesajului
     int clientID;   // ID-ul clientului
     int opID;       // codul operatiei
+    int requestID;  // ID-ul cererii (pentru corelare)
 } msgHeaderType;
 
 // Mesaj simplu ce contine un int
@@ -147,12 +171,53 @@ void stats_add_processed(int points, double distance, const char *filename);
 void stats_increment_processes(void);
 void stats_decrement_processes(void);
 void get_stats(server_stats_t *stats);
+void *completed_task_cleanup(void *arg);
+
+// Functii parsare fisiere
+int parse_csv(const char *filename, pointMsgType **points);
+int parse_gpx(const char *filename, pointMsgType **points);
+int parse_geojson(const char *filename, pointMsgType **points);
 
 // Coada de task-uri pentru procesare
 int queue_add_task(const char *filename, int client_id);
+int queue_add_task_file(const char *filename, const char *upload_path, int client_id, int sock_fd,
+                        const char *bbox, double epsilon, int show_segments,
+                        int dist_idx1, int dist_idx2, int request_id);
 void *queue_processor(void *arg);
 
-#endif 
+// Functii pipe notificare
+int init_notify_pipe(void);
+int get_notify_pipe_read_fd(void);
+void notify_queue(void);
+typedef struct queue_task {
+    int task_id;                // identificator unic al task-ului
+    int request_id;             // ID-ul cererii (pentru corelare)
+    int cancel_flag;
+    char filename[512];         // numele fisierului asociat cererii
+    char upload_path[512];  
+    char output_path[512];     
+    char bbox[128];             // bounding box optional pentru filtrare
+    double epsilon;             // prag pentru simplificare geometrica
+    int show_segments;          // flag pentru afisarea segmentelor
+    int dist_idx1;              // primul index pentru cererea de distanta
+    int dist_idx2;              // al doilea index pentru cererea de distanta
+    int client_id;              // ID-ul clientului care a trimis cererea
+    int sock_fd;                // socket-ul pe care se trimite raspunsul
+    int status;                 // starea task-ului: 0=pending,1=processing,2=done,3=cancelled
+    time_t start_time;          // momentul inceperii task-ului
+    time_t end_time;            // momentul finalizarii task-ului
+    pointMsgType *points;       // vectorul de puncte primit de la client
+    int point_count;            // numarul de puncte din cerere
+    task_result_t result;       // store computed results
+    struct queue_task *next;    // legatura spre urmatorul task din coada
+} queue_task_t;
+extern queue_task_t *completed_head;
+extern pthread_mutex_t completed_mutex;
+// Domain blacklist functions
+void domain_blacklist_add(const char *domain);
+void domain_blacklist_remove(const char *domain);
+int domain_blacklist_check(const char *domain);
+int force_disconnect_client(int session_id);
 
 // Structura pentru sesiune client (autentificare)
 typedef struct client_session {
@@ -169,7 +234,10 @@ int session_create(const char *username);
 int session_validate(int session_id);
 void session_invalidate(int session_id);
 void session_update_activity(int session_id);
-
+void session_sock_add(int session_id, int sock_fd);
+void session_sock_remove(int session_id);
+int session_sock_get_fd(int session_id);
+int force_disconnect_client(int session_id);
 // Structura pentru rezultat procesare geografica
 typedef struct geo_result {
     double total_distance;         // distanta totala
@@ -180,3 +248,5 @@ typedef struct geo_result {
     double route_distance;         // distanta traseu complet
     int has_distance_request;      // flag daca exista cerere de distanta
 } geo_result_t;
+
+#endif 

@@ -13,7 +13,10 @@ extern void format_queue_response(char *buffer, size_t bufsize);
 extern void format_avg_time_response(char *buffer, size_t bufsize);
 extern void format_sessions_response(char *buffer, size_t bufsize);
 extern int terminate_session(int session_id);
-
+extern void blacklist_add(const char *ip);
+extern void blacklist_remove(const char *ip);
+extern int cancel_task(int task_id);
+extern int force_disconnect_client(int session_id);
 // Formateaza intr-un buffer text statisticile generale ale serverului.
 void format_stats_response(server_stats_t *stats, char *buffer, size_t bufsize) {
     (void)bufsize;
@@ -90,7 +93,7 @@ void *unix_main(void *args) {
         pthread_exit(NULL);
     }
     
-    char logbuf[256];
+    char logbuf[512];
     snprintf(logbuf, sizeof(logbuf), "[UNIX] Trying to bind to path: '%s'", addr.sun_path);
     log_message(logbuf);
     
@@ -197,6 +200,42 @@ void *unix_main(void *args) {
                     } else {
                         char msg[] = "Sesiune negasita\n";
                         write(client_fd, msg, sizeof(msg)-1);
+                    }
+                }
+                else if (strncmp(buffer, "BLOCK_IP", 8) == 0) {
+                    char *ip = buffer + 9;
+                    blacklist_add(ip);
+                    write(client_fd, "IP blocked.\n", 12);
+                }
+                else if (strncmp(buffer, "UNBLOCK_IP", 10) == 0) {
+                    char *ip = buffer + 11;
+                    blacklist_remove(ip);
+                    write(client_fd, "IP unblocked.\n", 14);
+                }
+                else if (strncmp(buffer, "CANCEL", 6) == 0) {
+                    int task_id = atoi(buffer + 7);
+                    if (cancel_task(task_id))
+                        write(client_fd, "Task cancelled.\n", 16);
+                    else
+                        write(client_fd, "Task not found or already done.\n", 32);
+                }
+                else if (strncmp(buffer, "BLOCK_DOMAIN", 12) == 0) {
+                    char *domain = buffer + 13;
+                    domain_blacklist_add(domain);
+                    write(client_fd, "Domain blocked.\n", 16);
+                }
+                else if (strncmp(buffer, "UNBLOCK_DOMAIN", 14) == 0) {
+                    char *domain = buffer + 15;
+                    domain_blacklist_remove(domain);
+                    write(client_fd, "Domain unblocked.\n", 18);
+                }
+                else if (strncmp(buffer, "FORCE_DISCONNECT", 16) == 0) {
+                    int session_id = atoi(buffer + 17);
+                    // Apelează o funcție care închide socket-ul clientului cu acel session_id
+                    if (force_disconnect_client(session_id)) {
+                        write(client_fd, "Client disconnected.\n", 21);
+                    } else {
+                        write(client_fd, "Client not found.\n", 18);
                     }
                 }
                 // Comanda simpla de verificare a conectivitatii
