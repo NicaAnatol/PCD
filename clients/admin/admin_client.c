@@ -169,6 +169,12 @@ void draw_interface(int selected) {
         "6. Sesiuni active",
         "7. Creare proces (fork test)",
         "8. Termina sesiune (KILL)",
+        "b. Blocheaza IP",
+        "d. Deblocheaza IP",
+        "t. Anuleaza task",
+        "B. Blocheaza domeniu",
+        "U. Deblocheaza domeniu",
+        "f. Force disconnect client",
         "q. Iesire"
     };
     int n_menu = sizeof(menu) / sizeof(menu[0]);
@@ -235,7 +241,7 @@ int main(void) {
     int ch;
     int running = 1;
     time_t last_activity;
-    char input[32];
+    char input[64];
     
     // Conectare la serverul admin
     sock = connect_to_server();
@@ -308,18 +314,103 @@ int main(void) {
                     curs_set(1);
                     mvwprintw(main_wnd, 20, 4, "Session ID de terminat: ");
                     wrefresh(main_wnd);
-                    wgetnstr(main_wnd, input, 10);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
                     curs_set(0);
                     noecho();
                     
-                    char cmd[37];
+                    char cmd[128];
                     snprintf(cmd, sizeof(cmd), "KILL %s", input);
-                    char response[256];
-                    send_command(cmd, response, sizeof(response));
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 'b': {
+                    // Blocheaza IP
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "IP de blocat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
                     
-                    mvwprintw(stats_wnd, 1, 2, "%s", response);
-                    wrefresh(stats_wnd);
-                    napms(2000);
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "BLOCK_IP %s", input);
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 'd': {
+                    // Deblocheaza IP
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "IP de deblocat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "UNBLOCK_IP %s", input);
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 't': {
+                    // Anuleaza task
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "Task ID de anulat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "CANCEL %s", input);
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 'B': {
+                    // Blocheaza domeniu
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "Domeniu de blocat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "BLOCK_DOMAIN %s", input);
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 'U': {
+                    // Deblocheaza domeniu
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "Domeniu de deblocat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "UNBLOCK_DOMAIN %s", input);
+                    send_command(cmd, NULL, 0);
+                    break;
+                }
+                case 'f': {
+                    // Force disconnect client
+                    echo();
+                    curs_set(1);
+                    mvwprintw(main_wnd, 20, 4, "Session ID de deconectat fortat: ");
+                    wrefresh(main_wnd);
+                    wgetnstr(main_wnd, input, sizeof(input)-1);
+                    curs_set(0);
+                    noecho();
+                    
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd), "FORCE_DISCONNECT %s", input);
+                    send_command(cmd, NULL, 0);
                     break;
                 }
                 case 'q':
@@ -330,7 +421,7 @@ int main(void) {
                     if (selected > 0) selected--;
                     break;
                 case KEY_DOWN:
-                    if (selected < 5) selected++;
+                    if (selected < 13) selected++;
                     break;
             }
         }
