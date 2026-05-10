@@ -1,0 +1,97 @@
+# Compiled files
+*.o
+*.so
+*.a
+*.exe
+*.dll
+*.dylib
+
+# Executables
+serverds
+clients/inetclient
+clients/admin/admin_client
+geoclient
+
+# Python compiled files
+*.pyc
+*.pyo
+__pycache__/
+*.py[cod]
+
+# Directories
+processing/uploads/
+processing/processing/
+processing/outgoing/
+/tmp/geo_processing/
+*.log
+*.pid
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+.DS_Store
+
+# Socket files
+/tmp/geods.sock
+*.sock
+
+# Configuration files with sensitive data
+passwords.txt
+config/server.conf.local
+*.key
+*.pem
+*.crt
+
+# Backup files
+*.backup
+*.old
+*.orig
+
+# Valgrind output
+valgrind_*.log
+*.out
+
+# Documentation build
+ doc/
+*.pdf
+*.aux
+*.log.out
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Test files
+ test_files/
+*.tmp
+*.temp
+*.test
+
+# Core dumps
+core*
+*.core
+
+# Virtual environments (Python)
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Archive files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z

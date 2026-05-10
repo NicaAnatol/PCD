@@ -6,7 +6,7 @@ INCLUDES = -I./include
 SRCS = src/threeds.c src/unixds.c src/inetds2.c src/geo_processor.c src/proto.c src/logging.c src/file_io.c src/server_common.c src/config.c
 TARGET = serverds
 
-CLIENT_SRCS = clients/inetclient.c src/proto.c src/geo_processor.c src/logging.c src/file_io.c
+CLIENT_SRCS = clients/inetclient.c src/geo_processor.c src/logging.c src/file_io.c
 CLIENT = clients/inetclient
 
 ADMIN_SRCS = clients/admin/admin_client.c
@@ -28,4 +28,19 @@ clean:
 	rm -f processing/uploads/*
 	rm -f /tmp/geods
 
-.PHONY: all clean
+valgrind-server:
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --log-file=valgrind_server.log ./serverds
+
+valgrind-client:
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --log-file=valgrind_client.log ./clients/inetclient 127.0.0.1 18081
+
+valgrind-both:
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --log-file=valgrind_server.log ./serverds &
+	sleep 2
+	valgrind --leak-check=full --track-origins=yes --show-leak-kinds=all --log-file=valgrind_client.log ./clients/inetclient 127.0.0.1 18081
+	-killall serverds
+
+valgrind-quick:
+	valgrind --leak-check=summary --track-origins=yes ./clients/inetclient 127.0.0.1 18081
+
+.PHONY: all clean valgrind-server valgrind-client valgrind-both valgrind-quick
