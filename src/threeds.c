@@ -25,7 +25,7 @@ void *geo_worker_main(void *args) {
 
 // Punctul de intrare al aplicatiei server.
 int main(int argc, char *argv[]) {
-    pthread_t unixthr, inetthr, workerthr, queuethr;
+    pthread_t unixthr, inetthr, workerthr, queuethr, cleanup_thr;
     int opt;
     
     // Incarca valorile de configurare din fisierul implicit
@@ -52,7 +52,10 @@ int main(int argc, char *argv[]) {
     
     // Elimina socket-ul Unix vechi, daca exista, pentru a evita erori la restart
     unlink(g_config.unix_socket);
-    
+    if (init_notify_pipe() < 0) {
+    log_message("[MAIN] Failed to initialize notify pipe");
+    return 1;
+}   
     // Porneste thread-urile principale ale serverului:
     // - server Unix socket
     // - server INET/TCP
@@ -62,12 +65,14 @@ int main(int argc, char *argv[]) {
     pthread_create(&inetthr, NULL, inet_main, &g_config.inet_port);
     pthread_create(&workerthr, NULL, geo_worker_main, NULL);
     pthread_create(&queuethr, NULL, queue_processor, NULL);
+    pthread_create(&cleanup_thr, NULL, completed_task_cleanup, NULL);
     
     // Asteapta terminarea thread-urilor
     pthread_join(unixthr, NULL);
     pthread_join(inetthr, NULL);
     pthread_join(workerthr, NULL);
     pthread_join(queuethr, NULL);
+    pthread_join(cleanup_thr, NULL);
     
     // Curata socket-ul Unix la inchiderea serverului
     unlink(g_config.unix_socket);

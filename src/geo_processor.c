@@ -247,17 +247,25 @@ int process_with_children(const char *filename, int num_children, geoStatsMsgTyp
         return -1;
     }
     
-    pointMsgType points[10000];
+    // MODIFICAT: Alocare dinamica in loc de array pe stiva
+    #define MAX_POINTS 100000
+    pointMsgType *points = malloc(sizeof(pointMsgType) * MAX_POINTS);
+    if (!points) {
+        close(fd);
+        log_message("[ERROR] Memory allocation failed");
+        return -1;
+    }
+    
     int point_count = 0;
     char buffer[4096];
     ssize_t bytes;
     
     // Citeste fisierul si extrage punctele de forma lat,lon
-    while ((bytes = read(fd, buffer, sizeof(buffer) - 1)) > 0) {
+    while ((bytes = read(fd, buffer, sizeof(buffer) - 1)) > 0 && point_count < MAX_POINTS) {
         buffer[bytes] = '\0';
         char *line = buffer;
         char *next;
-        while ((next = strchr(line, '\n')) != NULL) {
+        while ((next = strchr(line, '\n')) != NULL && point_count < MAX_POINTS) {
             *next = '\0';
             if (sscanf(line, "%lf,%lf", &points[point_count].lat, &points[point_count].lon) == 2) {
                 point_count++;
@@ -270,6 +278,7 @@ int process_with_children(const char *filename, int num_children, geoStatsMsgTyp
     // Daca nu s-a extras niciun punct valid, procesarea nu poate continua
     if (point_count == 0) {
         log_message("[ERROR] No points in file");
+        free(points);
         return -1;
     }
     
@@ -282,7 +291,10 @@ int process_with_children(const char *filename, int num_children, geoStatsMsgTyp
     
     // Creeaza procese copil si canale pipe pentru comunicarea rezultatelor catre parinte
     for (int i = 0; i < num_children; i++) {
-        if (pipe(pipes[i]) < 0) return -1;
+        if (pipe(pipes[i]) < 0) {
+            free(points);
+            return -1;
+        }
         
         pids[i] = fork();
         
@@ -294,9 +306,11 @@ int process_with_children(const char *filename, int num_children, geoStatsMsgTyp
             double dist = calculate_distance(points + start, end - start);
             write(pipes[i][1], &dist, sizeof(double));
             close(pipes[i][1]);
+            free(points);
             _exit(0);
         } else if (pids[i] < 0) {
             // Eroare la creare proces copil
+            free(points);
             return -1;
         }
         
@@ -326,5 +340,6 @@ int process_with_children(const char *filename, int num_children, geoStatsMsgTyp
              point_count, num_children, total_distance);
     log_message(logbuf);
     
+    free(points);
     return 0;
 }
