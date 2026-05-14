@@ -388,7 +388,7 @@ else if (operation == OPR_CHECK_TASK) {
     char status_buf[256];
     get_task_status(task_id, status_buf, sizeof(status_buf));
     
-    // DEBUG: Verifică ce este în status_buf
+    // Verifică ce este în status_buf
     char dbg[512];
     snprintf(dbg, sizeof(dbg), "[DEBUG] status_buf content: '%s', length: %zu\n", status_buf, strlen(status_buf));
     write(STDOUT_FILENO, dbg, strlen(dbg));
@@ -700,7 +700,7 @@ else if (operation == OPR_CHECK_TASK) {
                         int session_id = client_id;
                         if (session_id > 0) {
                             session_invalidate(session_id);
-                            session_sock_remove(session_id);  // <--- ADĂUGĂ AICI
+                            session_sock_remove(session_id);  
                         }
                         char bye_msg[] = "Deconectare realizata";
                         writeSingleString(i, h, bye_msg);
