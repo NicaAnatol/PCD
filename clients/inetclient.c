@@ -56,7 +56,7 @@ typedef struct msgHeaderType {
     int requestID;  // ID-ul cererii (pentru corelare)
 } msgHeaderType;
 
-// MODIFIED: writeSingleString with request_id (16 bytes header + 4 bytes length + content)
+//writeSingleString with request_id (16 bytes header + 4 bytes length + content)
 int writeSingleString(int sock, msgHeaderType h, char *str) {
     int str_len = strlen(str);
     int total_len = 16 + 4 + str_len;  // header 16 + length 4 + content
@@ -79,7 +79,7 @@ int writeSingleString(int sock, msgHeaderType h, char *str) {
     return 0;
 }
 
-// MODIFIED: read_single_string - returns string and request_id
+// read_single_string - returns string and request_id
 char* read_single_string(int sock, int *ret_request_id) {
     char header[16];
     ssize_t received = 0;
@@ -123,7 +123,7 @@ char* read_single_string(int sock, int *ret_request_id) {
     return str;
 }
 
-// MODIFIED: readSingleInt - returns value and request_id
+// readSingleInt - returns value and request_id
 int readSingleInt(int sock, msgIntType *m, int *ret_request_id) {
     char buffer[20];
     ssize_t received = 0;
@@ -144,7 +144,7 @@ int readSingleInt(int sock, msgIntType *m, int *ret_request_id) {
     return 0;
 }
 
-// MODIFIED: writeSingleInt with request_id (16 bytes header + 4 bytes payload)
+// writeSingleInt with request_id (16 bytes header + 4 bytes payload)
 int writeSingleInt(int sock, msgHeaderType h, int value) {
     char buffer[20];  // 16 bytes header + 4 bytes payload
     int *parts = (int*)buffer;
