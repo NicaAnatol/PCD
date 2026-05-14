@@ -1,10 +1,10 @@
 # Proiect PCD - Aplicație Client-Server pentru Procesare Date Geospațiale
 
 ## Membri echipă
-- M1: Nica Anatol - Connection Manager
-- M2: Madalina Nechifor - Admin Client & Handler
-- M3: Marton Andrada - Ordinary Client C & Handler
-- M4: Maryna Oleksandr - Processing Queue & Handler
+- M1: Nica Anatol 
+- M2: Madalina Nechifor 
+- M3: Marton Andrada 
+- M4: Maryna Oleksandr 
 
 ## Tema aleasă
 Aplicație client-server pentru procesarea datelor geospațiale.  
