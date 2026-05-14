@@ -8,14 +8,14 @@
 
 ## Tema aleasă
 Aplicație client-server pentru procesarea datelor geospațiale.  
-Serverul primește puncte geografice (din fișiere sau input direct) și execută operații precum:
+Serverul primește puncte geografice din fișiere sau input direct și execută operații precum:
 - calculul distanței totale
 - simplificarea traseelor (Douglas-Peucker)
 - filtrarea după bounding box (bbox)
 
 Sistemul include:
 - client obișnuit (CLI) în C și Python
-- client admin (interfață ncurses)
+- client admin ncurses
 - server multi-threaded
 
 ## Nivel implementat
@@ -48,24 +48,24 @@ Sistemul include:
 - download rezultat procesare (CSV)
 - interfață CLI
 
-### Admin (ncurses)
+### Admin 
 - interfață cu meniu navigabil
 - vizualizare statistici server
 - listă clienți activi
 - istoric comenzi
 - coadă de procesare
 - sesiuni active
-- terminare sesiuni (KILL)
+- terminare sesiuni 
 - blocare/deblocare IP
 - blocare/deblocare domeniu
-- anulare task (CANCEL)
-- forțare deconectare client (FORCE_DISCONNECT)
+- anulare task 
+- forțare deconectare client 
 
 ## Modificari pentru Milestone 2
 
 ### Transfer fișiere bidirectional
-- `upload_raw` – upload fișier brut în chunk-uri de 8192 bytes (client → server)
-- `download <task_id>` – descărcare fișier rezultat CSV (server → client)
+- `upload_raw` – upload fișier brut în chunk-uri de 8192 bytes (client - server)
+- `download <task_id>` – descărcare fișier rezultat CSV (server - client)
 
 ### Procesare asincronă
 - returnare imediată `task_id` la upload
@@ -89,7 +89,7 @@ Sistemul include:
 - clientul verifică potrivirea ID-urilor
 
 ### Client admin
-- citire completă răspunsuri în `send_command()` (buclă până la timeout)
+- citire completă răspunsuri în `send_command()` 
 
 ### Generare fișier rezultat
 - CSV generat în `processing/outgoing/task_X_result.csv`
