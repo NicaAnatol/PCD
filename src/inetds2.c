@@ -455,7 +455,7 @@ else if (operation == OPR_CHECK_TASK) {
                         
                         write(STDOUT_FILENO, "[DEBUG] Session validated\n", 26);
                         
-                        // 1. Citește numele fișierului
+                        // Citește numele fișierului
                         msgStringType filename;
                         if (readSingleString(i, &filename) < 0) {
                             write(STDOUT_FILENO, "[DEBUG] Failed to read filename\n", 32);
@@ -466,7 +466,7 @@ else if (operation == OPR_CHECK_TASK) {
                         
                         write(STDOUT_FILENO, "[DEBUG] Filename read successfully\n", 35);
                         
-                        // 2. Citește dimensiunea fișierului
+                        //  Citește dimensiunea fișierului
                         msgIntType size_msg;
                         if (readSingleInt(i, &size_msg) < 0) {
                             write(STDOUT_FILENO, "[DEBUG] Failed to read file size\n", 33);
@@ -481,7 +481,7 @@ else if (operation == OPR_CHECK_TASK) {
                         write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
                         size_t file_size = size_msg.msg;
                         
-                        // 3. Citește parametrii GEO (ÎNAINTE de chunk-uri!)
+                        //  Citește parametrii GEO 
                         msgStringType bbox_str;
                         char bbox[128] = "";
                         if (readSingleString(i, &bbox_str) >= 0 && strlen(bbox_str.msg) > 0) {
@@ -516,12 +516,12 @@ else if (operation == OPR_CHECK_TASK) {
                         
                         write(STDOUT_FILENO, "[DEBUG] GEO params read successfully\n", 36);
                         
-                        // DEBUG: Afișează file_size, session_id și filename
+                        // Afișează file_size, session_id și filename
                         snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] file_size=%zu, session_id=%d, filename=%s\n", 
                                  file_size, session_id, filename.msg);
                         write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
                         
-                        // Sanitizează numele fișierului - păstrează doar ultima componentă după '/'
+                        // Sanitizează numele fișierului - păstrează doar ultima componentă
                         char *basename = strrchr(filename.msg, '/');
                         if (basename != NULL) {
                             basename++;
@@ -529,7 +529,7 @@ else if (operation == OPR_CHECK_TASK) {
                             basename = filename.msg;
                         }
                         
-                        // 4. Pregătește calea de scriere
+                        //  Pregătește calea de scriere
                         char upload_path[512];
                         snprintf(upload_path, sizeof(upload_path), "processing/uploads/%d_%s",
                                  session_id, basename);
@@ -551,7 +551,7 @@ else if (operation == OPR_CHECK_TASK) {
                         snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] out_fd=%d, about to enter while loop\n", out_fd);
                         write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
                         
-                        // 5. Primește chunk-uri de date brute
+                        // Primește chunk-uri de date brute
                         size_t received = 0;
                         char chunk[8192];
                         int chunk_result = 1;
@@ -607,7 +607,7 @@ else if (operation == OPR_CHECK_TASK) {
                                                           dist_idx1, dist_idx2, request_id);
                         free(filename.msg);
                         
-                        // 7. Trimite task_id înapoi
+                        //  Trimite task_id înapoi
                         writeSingleInt(i, h, task_id);
                         
                         char hist_entry[256];
