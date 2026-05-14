@@ -312,7 +312,7 @@ int session_sock_get_fd(int session_id) {
     return -1;
 }
 
-// Force disconnect a client by session ID - MODIFICAT
+// Force disconnect a client by session ID
 int force_disconnect_client(int session_id) {
     pthread_mutex_lock(&session_mutex);
     client_session_t *curr = sessions;
@@ -373,7 +373,7 @@ void *completed_task_cleanup(void *arg) {
             // Dacă task-ul este mai vechi decât LIFETIME
             if (now - curr->end_time > COMPLETED_TASK_LIFETIME) {
                 queue_task_t *to_free = curr;
-                int task_id = to_free->task_id;  // SALVEAZĂ ID-ul ÎNAINTE de free
+                int task_id = to_free->task_id;  
                 
                 if (prev) {
                     prev->next = curr->next;
@@ -407,11 +407,6 @@ void *completed_task_cleanup(void *arg) {
 
 
 // Proceseaza efectiv un task GEO extras din coada.
-// Etapele posibile sunt: filtrare dupa bounding box, simplificare si calcul de distante.
-// MODIFIED: Store results in task->result instead of sending via socket.
-// Proceseaza efectiv un task GEO extras din coada.
-// Etapele posibile sunt: filtrare dupa bounding box, simplificare si calcul de distante.
-// MODIFIED: Store results in task->result instead of sending via socket.
 static void process_task_real(queue_task_t *task) {
     pointMsgType *points = task->points;
     int point_count = task->point_count;
@@ -588,7 +583,7 @@ static void process_task_real(queue_task_t *task) {
         log_message(warnbuf);
     }
     
-    // MODIFIED: Store results in task->result instead of sending via socket
+    // Store results in task->result instead of sending via socket
     snprintf(task->result.total_distance, sizeof(task->result.total_distance), "%.6f", total_distance);
     snprintf(task->result.point_count, sizeof(task->result.point_count), "%d", point_count);
     snprintf(task->result.segment_count, sizeof(task->result.segment_count), "%d", segment_count);
@@ -674,7 +669,6 @@ static void process_task_real(queue_task_t *task) {
 }
 
 // Creeaza un task nou si il adauga in coada de procesare.
-// MODIFIED: Store task_id and result storage; do NOT send results immediately
 int queue_add_task_full(const char *filename, int client_id, int sock_fd, int point_count,
                         const char *bbox, double epsilon, int show_segments,
                         int dist_idx1, int dist_idx2, pointMsgType *points, int request_id) {
@@ -833,13 +827,11 @@ void get_task_status(int task_id, char *buf, size_t bufsize) {
     curr = completed_head;
     while (curr) {
         if (curr->task_id == task_id) {
-            // MODIFICAT: Elimină newline-ul din ctime()
             char time_str[64];
             char *ctime_result = ctime(&curr->end_time);
             if (ctime_result) {
                 strncpy(time_str, ctime_result, sizeof(time_str) - 1);
                 time_str[sizeof(time_str) - 1] = '\0';
-                // Elimină caracterul newline de la sfârșit
                 size_t len = strlen(time_str);
                 if (len > 0 && time_str[len - 1] == '\n') {
                     time_str[len - 1] = '\0';
