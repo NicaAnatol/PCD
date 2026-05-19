@@ -80,6 +80,7 @@
 #define OPR_CANCEL_TASK   32
 #define OPR_UPLOAD_FILE   50
 #define OPR_DOWNLOAD_FILE 51
+#define OPR_ASYNC_NOTIFY  60
 typedef struct task_result {
     char total_distance[64];
     char point_count[32];

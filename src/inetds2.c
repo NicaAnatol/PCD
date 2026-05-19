@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../include/logging.h"   // Pentru logarea evenimentelor si erorilor serverului
 #include "../include/proto.h"     // Pentru structurile de mesaje, constantele OPR_* si functiile de comunicare
 #include "../include/config.h"    // Pentru acces la configuratia globala a serverului
@@ -6,6 +7,7 @@
 #include <netdb.h>
 // Declaratii externe pentru functiile implementate in alte module.
 // Acestea sunt folosite aici pentru autentificare, sesiuni, statistici si coada de task-uri.
+extern pthread_barrier_t startup_barrier;
 extern int session_create(const char *username);
 extern int session_validate(int session_id);
 extern void session_invalidate(int session_id);
@@ -67,6 +69,7 @@ int inet_socket(uint16_t port, short reuse) {
 // Thread-ul principal pentru serverul INET.
 // Gestioneaza conexiuni noi si comenzile trimise de clientii conectati.
 void *inet_main(void *args) {
+    pthread_barrier_wait(&startup_barrier);
     int port = *((int *)args);
     int sock;
     size_t size;
@@ -441,260 +444,314 @@ else if (operation == OPR_CHECK_TASK) {
                         }
                     }
                  
-                    else if (operation == OPR_UPLOAD_FILE) {
-                        char debug_msg[] = "[DEBUG] Received OPR_UPLOAD_FILE\n";
-                        write(STDOUT_FILENO, debug_msg, strlen(debug_msg));
-                        
-                        int session_id = client_id;
-                        if (!session_validate(session_id)) {
-                            char err_msg[] = "Sesiune invalida\n";
-                            write(STDOUT_FILENO, err_msg, strlen(err_msg));
-                            writeSingleString(i, h, err_msg);
-                            continue;
-                        }
-                        
-                        write(STDOUT_FILENO, "[DEBUG] Session validated\n", 26);
-                        
-                        // Citește numele fișierului
-                        msgStringType filename;
-                        if (readSingleString(i, &filename) < 0) {
-                            write(STDOUT_FILENO, "[DEBUG] Failed to read filename\n", 32);
-                            char err_msg[] = "Eroare la citirea numelui fisierului";
-                            writeSingleString(i, h, err_msg);
-                            continue;
-                        }
-                        
-                        write(STDOUT_FILENO, "[DEBUG] Filename read successfully\n", 35);
-                        
-                        //  Citește dimensiunea fișierului
-                        msgIntType size_msg;
-                        if (readSingleInt(i, &size_msg) < 0) {
-                            write(STDOUT_FILENO, "[DEBUG] Failed to read file size\n", 33);
-                            free(filename.msg);
-                            char err_msg[] = "Eroare la citirea dimensiunii";
-                            writeSingleString(i, h, err_msg);
-                            continue;
-                        }
-                        
-                        char logbuf2[512];
-                        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] File size: %d bytes\n", size_msg.msg);
-                        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                        size_t file_size = size_msg.msg;
-                        
-                        //  Citește parametrii GEO 
-                        msgStringType bbox_str;
-                        char bbox[128] = "";
-                        if (readSingleString(i, &bbox_str) >= 0 && strlen(bbox_str.msg) > 0) {
-                            strncpy(bbox, bbox_str.msg, sizeof(bbox)-1);
-                            free(bbox_str.msg);
-                        }
-                        
-                        msgStringType epsilon_str;
-                        double epsilon = -1;
-                        if (readSingleString(i, &epsilon_str) >= 0 && strlen(epsilon_str.msg) > 0) {
-                            epsilon = atof(epsilon_str.msg);
-                            free(epsilon_str.msg);
-                        }
-                        
-                        msgStringType segments_flag_str;
-                        int show_segments = 0;
-                        if (readSingleString(i, &segments_flag_str) >= 0 && strlen(segments_flag_str.msg) > 0) {
-                            show_segments = atoi(segments_flag_str.msg);
-                            free(segments_flag_str.msg);
-                        }
-                        
-                        msgStringType dist1_str, dist2_str;
-                        int dist_idx1 = 0, dist_idx2 = 0;
-                        if (readSingleString(i, &dist1_str) >= 0 && strlen(dist1_str.msg) > 0) {
-                            dist_idx1 = atoi(dist1_str.msg);
-                            free(dist1_str.msg);
-                        }
-                        if (readSingleString(i, &dist2_str) >= 0 && strlen(dist2_str.msg) > 0) {
-                            dist_idx2 = atoi(dist2_str.msg);
-                            free(dist2_str.msg);
-                        }
-                        
-                        write(STDOUT_FILENO, "[DEBUG] GEO params read successfully\n", 36);
-                        
-                        // Afișează file_size, session_id și filename
-                        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] file_size=%zu, session_id=%d, filename=%s\n", 
-                                 file_size, session_id, filename.msg);
-                        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                        
-                        // Sanitizează numele fișierului - păstrează doar ultima componentă
-                        char *basename = strrchr(filename.msg, '/');
-                        if (basename != NULL) {
-                            basename++;
-                        } else {
-                            basename = filename.msg;
-                        }
-                        
-                        //  Pregătește calea de scriere
-                        char upload_path[512];
-                        snprintf(upload_path, sizeof(upload_path), "processing/uploads/%d_%s",
-                                 session_id, basename);
-                        
-                        char pathbuf[600];
-                        snprintf(pathbuf, sizeof(pathbuf), "[DEBUG] upload_path=%s\n", upload_path);
-                        write(STDOUT_FILENO, pathbuf, strlen(pathbuf));
-                        
-                        int out_fd = open(upload_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-                        if (out_fd < 0) {
-                            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] open failed: %s\n", strerror(errno));
-                            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                            free(filename.msg);
-                            char err_msg[] = "Eroare la crearea fisierului";
-                            writeSingleString(i, h, err_msg);
-                            continue;
-                        }
-                        
-                        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] out_fd=%d, about to enter while loop\n", out_fd);
-                        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                        
-                        // Primește chunk-uri de date brute
-                        size_t received = 0;
-                        char chunk[8192];
-                        int chunk_result = 1;
-                        
-                        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] Entering while: received=%zu, file_size=%zu\n", received, file_size);
-                        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                        
-                        while (received < file_size) {
-                            size_t to_read = (file_size - received) < sizeof(chunk) ? (file_size - received) : sizeof(chunk);
-                            
-                            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] Calling recv, to_read=%zu\n", to_read);
-                            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                            
-                            ssize_t n = recv(i, chunk, to_read, 0);
-                            if (n <= 0) {
-                                snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] recv returned %zd, errno=%d (%s)\n", n, errno, strerror(errno));
-                                write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                                chunk_result = -1;
-                                break;
-                            }
-                            
-                            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] recv got %zd bytes\n", n);
-                            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                            
-                            ssize_t written = write(out_fd, chunk, n);
-                            if (written != n) {
-                                snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] write failed: wrote %zd, expected %zd\n", written, n);
-                                write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                                chunk_result = -1;
-                                break;
-                            }
-                            received += n;
-                            
-                            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] received now %zu of %zu\n", received, file_size);
-                            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                        }
-                        
-                        close(out_fd);
-                        
-                        if (chunk_result < 0 || received != file_size) {
-                            unlink(upload_path);
-                            free(filename.msg);
-                            char err_msg[] = "Eroare la transferul fisierului";
-                            writeSingleString(i, h, err_msg);
-                            continue;
-                        }
-                        
-                        write(STDOUT_FILENO, "[DEBUG] File chunks received successfully\n", 40);
-                        
-                        // 6. Adaugă task-ul în coadă
-                        int task_id = queue_add_task_file(basename, upload_path, session_id, i,
-                                                          bbox, epsilon, show_segments,
-                                                          dist_idx1, dist_idx2, request_id);
-                        free(filename.msg);
-                        
-                        //  Trimite task_id înapoi
-                        writeSingleInt(i, h, task_id);
-                        
-                        char hist_entry[256];
-                        snprintf(hist_entry, sizeof(hist_entry), "Upload file: %s (%zu bytes) -> task %d",
-                                 basename, file_size, task_id);
-                        add_to_history(hist_entry);
-                        
-                        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] Task %d created\n", task_id);
-                        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
-                    }
+else if (operation == OPR_UPLOAD_FILE) {
+    char debug_msg[] = "[DEBUG] Received OPR_UPLOAD_FILE\n";
+    write(STDOUT_FILENO, debug_msg, strlen(debug_msg));
+    
+    int session_id = client_id;
+    if (!session_validate(session_id)) {
+        char err_msg[] = "Sesiune invalida\n";
+        write(STDOUT_FILENO, err_msg, strlen(err_msg));
+        writeSingleString(i, h, err_msg);
+        continue;
+    }
+    
+    write(STDOUT_FILENO, "[DEBUG] Session validated\n", 26);
+    
+    // Citește numele fișierului
+    msgStringType filename;
+    if (readSingleString(i, &filename) < 0) {
+        write(STDOUT_FILENO, "[DEBUG] Failed to read filename\n", 32);
+        char err_msg[] = "Eroare la citirea numelui fisierului";
+        writeSingleString(i, h, err_msg);
+        continue;
+    }
+    
+    write(STDOUT_FILENO, "[DEBUG] Filename read successfully\n", 35);
+    
+    // Citește dimensiunea fișierului
+    msgIntType size_msg;
+    if (readSingleInt(i, &size_msg) < 0) {
+        write(STDOUT_FILENO, "[DEBUG] Failed to read file size\n", 33);
+        free(filename.msg);
+        char err_msg[] = "Eroare la citirea dimensiunii";
+        writeSingleString(i, h, err_msg);
+        continue;
+    }
+    
+    char logbuf2[512];
+    snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] File size: %d bytes\n", size_msg.msg);
+    write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+    size_t file_size = size_msg.msg;
+    
+    // Citește parametrii GEO 
+    msgStringType bbox_str;
+    char bbox[128] = "";
+    if (readSingleString(i, &bbox_str) >= 0 && strlen(bbox_str.msg) > 0) {
+        strncpy(bbox, bbox_str.msg, sizeof(bbox)-1);
+        free(bbox_str.msg);
+    }
+    
+    msgStringType epsilon_str;
+    double epsilon = -1;
+    if (readSingleString(i, &epsilon_str) >= 0 && strlen(epsilon_str.msg) > 0) {
+        epsilon = atof(epsilon_str.msg);
+        free(epsilon_str.msg);
+    }
+    
+    msgStringType segments_flag_str;
+    int show_segments = 0;
+    if (readSingleString(i, &segments_flag_str) >= 0 && strlen(segments_flag_str.msg) > 0) {
+        show_segments = atoi(segments_flag_str.msg);
+        free(segments_flag_str.msg);
+    }
+    
+    msgStringType dist1_str, dist2_str;
+    int dist_idx1 = 0, dist_idx2 = 0;
+    if (readSingleString(i, &dist1_str) >= 0 && strlen(dist1_str.msg) > 0) {
+        dist_idx1 = atoi(dist1_str.msg);
+        free(dist1_str.msg);
+    }
+    if (readSingleString(i, &dist2_str) >= 0 && strlen(dist2_str.msg) > 0) {
+        dist_idx2 = atoi(dist2_str.msg);
+        free(dist2_str.msg);
+    }
+    
+    write(STDOUT_FILENO, "[DEBUG] GEO params read successfully\n", 36);
+    
+    // Afișează file_size, session_id și filename
+    snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] file_size=%zu, session_id=%d, filename=%s\n", 
+             file_size, session_id, filename.msg);
+    write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+    
+    // Sanitizează numele fișierului - păstrează doar ultima componentă
+    char *basename = strrchr(filename.msg, '/');
+    if (basename != NULL) {
+        basename++;
+    } else {
+        basename = filename.msg;
+    }
+    
+    // Pregătește calea de scriere
+    char upload_path[512];
+    snprintf(upload_path, sizeof(upload_path), "processing/uploads/%d_%s",
+             session_id, basename);
+    
+    char pathbuf[600];
+    snprintf(pathbuf, sizeof(pathbuf), "[DEBUG] upload_path=%s\n", upload_path);
+    write(STDOUT_FILENO, pathbuf, strlen(pathbuf));
+    
+    // Scrie fișierul cu parametrii GEO într-un fișier .params
+    char params_path[512];
+    snprintf(params_path, sizeof(params_path), "processing/uploads/%d_%s.params",
+             session_id, basename);
+    
+    int params_fd = open(params_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (params_fd >= 0) {
+        char params_buf[512];
+        snprintf(params_buf, sizeof(params_buf), 
+                 "bbox=%s epsilon=%.6f segments=%d distance=%d,%d\n",
+                 bbox, epsilon, show_segments, dist_idx1, dist_idx2);
+        write(params_fd, params_buf, strlen(params_buf));
+        close(params_fd);
+    }
+    
+    int out_fd = open(upload_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out_fd < 0) {
+        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] open failed: %s\n", strerror(errno));
+        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+        free(filename.msg);
+        char err_msg[] = "Eroare la crearea fisierului";
+        writeSingleString(i, h, err_msg);
+        continue;
+    }
+    
+    snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] out_fd=%d, about to enter while loop\n", out_fd);
+    write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+    
+    // Primește chunk-uri de date brute
+    size_t received = 0;
+    char chunk[8192];
+    int chunk_result = 1;
+    
+    snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] Entering while: received=%zu, file_size=%zu\n", received, file_size);
+    write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+    
+    while (received < file_size) {
+        size_t to_read = (file_size - received) < sizeof(chunk) ? (file_size - received) : sizeof(chunk);
+        
+        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] Calling recv, to_read=%zu\n", to_read);
+        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+        
+        ssize_t n = recv(i, chunk, to_read, 0);
+        if (n <= 0) {
+            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] recv returned %zd, errno=%d (%s)\n", n, errno, strerror(errno));
+            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+            chunk_result = -1;
+            break;
+        }
+        
+        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] recv got %zd bytes\n", n);
+        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+        
+        ssize_t written = write(out_fd, chunk, n);
+        if (written != n) {
+            snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] write failed: wrote %zd, expected %zd\n", written, n);
+            write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+            chunk_result = -1;
+            break;
+        }
+        received += n;
+        
+        snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] received now %zu of %zu\n", received, file_size);
+        write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+    }
+    
+    close(out_fd);
+    
+    if (chunk_result < 0 || received != file_size) {
+        unlink(upload_path);
+        unlink(params_path);
+        free(filename.msg);
+        char err_msg[] = "Eroare la transferul fisierului";
+        writeSingleString(i, h, err_msg);
+        continue;
+    }
+    
+    write(STDOUT_FILENO, "[DEBUG] File chunks received successfully\n", 40);
+    free(filename.msg);
+    
+    // NU mai crea task-ul aici! Lasă inotify să-l creeze
+    // Trimite un răspuns temporar (task_id = 0) - clientul va primi notificarea async
+    writeSingleInt(i, h, 0);
+    
+    char hist_entry[256];
+    snprintf(hist_entry, sizeof(hist_entry), "Upload file: %s (%zu bytes) -> waiting for inotify",
+             basename, file_size);
+    add_to_history(hist_entry);
+    
+    snprintf(logbuf2, sizeof(logbuf2), "[DEBUG] File saved, waiting for inotify to create task\n");
+    write(STDOUT_FILENO, logbuf2, strlen(logbuf2));
+}
 
-                    else if (operation == OPR_DOWNLOAD_FILE) {
-                        msgIntType task_id_msg;
-                        if (readSingleInt(i, &task_id_msg) < 0) {
-                            close(i);
-                            FD_CLR(i, &active_fd_set);
-                            stats_decrement_clients();
-                            continue;
-                        }
-                        int task_id = task_id_msg.msg;
-                        
-                        // Păstrează request_id-ul primit de la client
-                        int original_request_id = request_id;
-                        
-                        // Găsește task-ul în lista de finalizate
-                        pthread_mutex_lock(&completed_mutex);
-                        queue_task_t *task = completed_head;
-                        while (task) {
-                            if (task->task_id == task_id && task->status == 2) {
-                                break;
-                            }
-                            task = task->next;
-                        }
-                        pthread_mutex_unlock(&completed_mutex);
-                        
-                        if (!task || task->output_path[0] == '\0') {
-                            // Creează un header nou cu același request_id
-                            msgHeaderType resp_h = h;
-                            resp_h.requestID = original_request_id;
-                            char err_msg[] = "ERROR: File not found or task not completed";
-                            writeSingleString(i, resp_h, err_msg);
-                            continue;
-                        }
-                        
-                        // Deschide fișierul pentru citire
-                        int fd = open(task->output_path, O_RDONLY);
-                        if (fd < 0) {
-                            msgHeaderType resp_h = h;
-                            resp_h.requestID = original_request_id;
-                            char err_msg[] = "ERROR: Cannot open result file";
-                            writeSingleString(i, resp_h, err_msg);
-                            continue;
-                        }
-                        
-                        // Obține dimensiunea fișierului
-                        off_t file_size = lseek(fd, 0, SEEK_END);
-                        lseek(fd, 0, SEEK_SET);
-                        
-                        // Trimite metadate: nume fișier și dimensiune (folosește același request_id)
-                        msgHeaderType resp_h = h;
-                        resp_h.requestID = original_request_id;
-                        
-                        char fname[256];
-                        snprintf(fname, sizeof(fname), "task_%d_result.csv", task_id);
-                        writeSingleString(i, resp_h, fname);
-                        writeSingleInt(i, resp_h, (int)file_size);
-                        
-                        // Trimite conținutul fișierului în chunk-uri
-                        char chunk[8192];
-                        ssize_t bytes;
-                        off_t sent = 0;
-                        while ((bytes = read(fd, chunk, sizeof(chunk))) > 0) {
-                            ssize_t n = send(i, chunk, bytes, 0);
-                            if (n != bytes) {
-                                char err_msg[] = "ERROR: Transfer failed";
-                                writeSingleString(i, resp_h, err_msg);
-                                break;
-                            }
-                            sent += n;
-                        }
-                        close(fd);
-                        
-                        char logbuf3[512];
-                        snprintf(logbuf3, sizeof(logbuf3), "[DOWNLOAD] Sent file %s (%ld bytes) to session %d",
-                                 fname, (long)file_size, client_id);
-                        log_message(logbuf3);
-                    }
+                   else if (operation == OPR_DOWNLOAD_FILE) {
+    char dbg[1024];
+    
+    msgIntType task_id_msg;
+    if (readSingleInt(i, &task_id_msg) < 0) {
+        close(i);
+        FD_CLR(i, &active_fd_set);
+        stats_decrement_clients();
+        continue;
+    }
+    int task_id = task_id_msg.msg;
+    
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Request received for task_id=%d, client_id=%d, request_id=%d\n", 
+             task_id, client_id, request_id);
+    log_message(dbg);
+    
+    // Păstrează request_id-ul primit de la client
+    int original_request_id = request_id;
+    
+    // Găsește task-ul în lista de finalizate
+    pthread_mutex_lock(&completed_mutex);
+    queue_task_t *task = completed_head;
+    while (task) {
+        if (task->task_id == task_id && task->status == 2) {
+            break;
+        }
+        task = task->next;
+    }
+    pthread_mutex_unlock(&completed_mutex);
+    
+    if (!task || task->output_path[0] == '\0') {
+        snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Task not found or output_path empty: task=%p, output_path='%s'\n", 
+                 (void*)task, task ? task->output_path : "NULL");
+        log_message(dbg);
+        
+        // Creează un header nou cu același request_id
+        msgHeaderType resp_h = h;
+        resp_h.requestID = original_request_id;
+        char err_msg[] = "ERROR: File not found or task not completed";
+        writeSingleString(i, resp_h, err_msg);
+        continue;
+    }
+    
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Task found: task_id=%d, output_path='%s'\n", 
+             task->task_id, task->output_path);
+    log_message(dbg);
+    
+    // Deschide fișierul pentru citire
+    int fd = open(task->output_path, O_RDONLY);
+    if (fd < 0) {
+        snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Failed to open file: %s, errno=%d\n", 
+                 task->output_path, errno);
+        log_message(dbg);
+        
+        msgHeaderType resp_h = h;
+        resp_h.requestID = original_request_id;
+        char err_msg[] = "ERROR: Cannot open result file";
+        writeSingleString(i, resp_h, err_msg);
+        continue;
+    }
+    
+    // Obține dimensiunea fișierului
+    off_t file_size = lseek(fd, 0, SEEK_END);
+    lseek(fd, 0, SEEK_SET);
+    
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] File opened: size=%ld bytes\n", (long)file_size);
+    log_message(dbg);
+    
+    // Trimite metadate: nume fișier și dimensiune (folosește același request_id)
+    msgHeaderType resp_h = h;
+    resp_h.requestID = original_request_id;
+    
+    char fname[256];
+    snprintf(fname, sizeof(fname), "task_%d_result.csv", task_id);
+    
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Sending filename: '%s' with request_id=%d\n", 
+             fname, resp_h.requestID);
+    log_message(dbg);
+    
+    int ret1 = writeSingleString(i, resp_h, fname);
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] writeSingleString returned %d\n", ret1);
+    log_message(dbg);
+    
+    int ret2 = writeSingleInt(i, resp_h, (int)file_size);
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] writeSingleInt returned %d\n", ret2);
+    log_message(dbg);
+    
+    // Trimite conținutul fișierului în chunk-uri
+    char chunk[8192];
+    ssize_t bytes;
+    off_t sent = 0;
+    int chunk_num = 0;
+    
+    while ((bytes = read(fd, chunk, sizeof(chunk))) > 0) {
+        snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Sending chunk %d, size=%ld bytes, sent=%ld/%ld\n", 
+                 chunk_num++, (long)bytes, (long)sent, (long)file_size);
+        log_message(dbg);
+        
+        ssize_t n = send(i, chunk, bytes, 0);
+        if (n != bytes) {
+            snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Send failed: sent %zd, expected %zd\n", n, bytes);
+            log_message(dbg);
+            char err_msg[] = "ERROR: Transfer failed";
+            writeSingleString(i, resp_h, err_msg);
+            break;
+        }
+        sent += n;
+    }
+    close(fd);
+    
+    snprintf(dbg, sizeof(dbg), "[DEBUG DOWNLOAD] Transfer complete: sent %ld/%ld bytes\n", (long)sent, (long)file_size);
+    log_message(dbg);
+    
+    char logbuf3[512];
+    snprintf(logbuf3, sizeof(logbuf3), "[DOWNLOAD] Sent file %s (%ld bytes) to session %d",
+             fname, (long)file_size, client_id);
+    log_message(logbuf3);
+}
                     else if (operation == OPR_BYE) {
                         // Tratarea cererii de deconectare
                         int session_id = client_id;

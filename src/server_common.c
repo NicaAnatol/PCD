@@ -1,14 +1,19 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../include/logging.h"   // Pentru logarea evenimentelor si erorilor serverului
 #include "../include/proto.h"     // Pentru structuri si tipuri comune folosite in server
 #include <fcntl.h>                // Pentru operatii pe fisiere si flag-uri precum open()
 #include <stdlib.h>               // Pentru functii utilitare, inclusiv getenv()
-
+#include <sys/inotify.h>
+#include <semaphore.h>
 // Structura globala care retine statistici despre activitatea serverului.
 // Accesul concurent este protejat cu mutex.
+extern pthread_barrier_t startup_barrier;
 static server_stats_t g_stats = {0, 0, 0, 0.0, ""};
 static int notify_pipe[2] = {-1, -1};  // pipe pentru notificare coadă
 static pthread_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
-
+static pthread_mutex_t monitor_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  monitor_cond  = PTHREAD_COND_INITIALIZER;
+static int server_running = 1; // Flag pentru oprirea graceful
 // Lista de sesiuni active ale clientilor conectati.
 // next_session_id este folosit pentru generarea unui ID unic pentru fiecare sesiune noua.
 static client_session_t *sessions = NULL;
@@ -50,7 +55,7 @@ static queue_task_t *queue_head = NULL;
 static queue_task_t *queue_tail = NULL;
 static int next_task_id = 1;
 static pthread_mutex_t queue_mutex = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t queue_cond = PTHREAD_COND_INITIALIZER;
+sem_t queue_sem; 
 
 queue_task_t *completed_head = NULL;
 queue_task_t *completed_tail = NULL;
@@ -65,6 +70,9 @@ typedef struct {
 static session_sock_map_t session_sock_map[MAX_SESSION_SOCK_MAP];
 static int session_sock_map_count = 0;
 static pthread_mutex_t session_sock_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static int inotify_fd = -1;
+pthread_t inotify_thread;
 
 
 int init_notify_pipe(void) {
@@ -161,7 +169,105 @@ void format_history_response(char *buffer, size_t bufsize) {
     
     pthread_mutex_unlock(&history_mutex);
 }
-
+static void process_uploaded_file(const char *filepath) {
+    // Ignoră fișierele .lock și .params
+    if (strstr(filepath, ".lock") != NULL || strstr(filepath, ".params") != NULL) {
+        return;
+    }
+    
+    char debug_buf[1024];
+    snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] process_uploaded_file: filepath='%s'", filepath);
+    log_message(debug_buf);
+    
+    // Așteaptă puțin pentru a fi sigur că fișierul este complet scris
+    struct timespec req = {0, 100000000L};  // 100ms
+    struct timespec rem;
+    nanosleep(&req, &rem);
+    
+    char *basename = strrchr(filepath, '/');
+    if (!basename) basename = (char*)filepath;
+    else basename++;
+    
+    snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] basename='%s'", basename);
+    log_message(debug_buf);
+    
+    // Format: session_id_filename.ext
+    char *underscore = strchr(basename, '_');
+    if (!underscore) {
+        log_message("[INOTIFY] Invalid filename format, skipping");
+        return;
+    }
+    
+    *underscore = '\0';
+    int session_id = atoi(basename);
+    char *filename = underscore + 1;
+    
+    snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] session_id=%d, filename='%s'", session_id, filename);
+    log_message(debug_buf);
+    
+    if (session_id <= 0 || !filename || strlen(filename) == 0) {
+        log_message("[INOTIFY] Invalid session_id or filename");
+        return;
+    }
+    
+    if (!session_validate(session_id)) {
+        log_message("[INOTIFY] Invalid session, skipping");
+        return;
+    }
+    
+    int client_fd = session_sock_get_fd(session_id);
+    
+    // Verifică dacă există fișier cu parametri (același nume cu extensia .params)
+    char params_path[512];
+    snprintf(params_path, sizeof(params_path), "processing/uploads/%s.params", filename);
+    
+    char bbox[128] = "";
+    double epsilon = -1;
+    int show_segments = 0;
+    int dist_idx1 = 0, dist_idx2 = 0;
+    
+    int params_fd = open(params_path, O_RDONLY);
+    if (params_fd >= 0) {
+        char params_buf[512];
+        ssize_t n = read(params_fd, params_buf, sizeof(params_buf) - 1);
+        if (n > 0) {
+            params_buf[n] = '\0';
+            char *token = strtok(params_buf, " \n");
+            while (token) {
+                if (strncmp(token, "bbox=", 5) == 0) {
+                    strncpy(bbox, token + 5, sizeof(bbox) - 1);
+                } else if (strncmp(token, "epsilon=", 8) == 0) {
+                    epsilon = atof(token + 8);
+                } else if (strncmp(token, "segments=", 9) == 0) {
+                    show_segments = atoi(token + 9);
+                } else if (strncmp(token, "distance=", 9) == 0) {
+                    sscanf(token + 9, "%d,%d", &dist_idx1, &dist_idx2);
+                }
+                token = strtok(NULL, " \n");
+            }
+        }
+        close(params_fd);
+        unlink(params_path);
+    }
+    
+    // CONSTRUIEȘTE MANUAL UPLOAD_PATH CORECT
+    char correct_upload_path[512];
+    snprintf(correct_upload_path, sizeof(correct_upload_path), "processing/uploads/%d_%s", session_id, filename);
+    
+    snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Calling queue_add_task_file with upload_path='%s'", correct_upload_path);
+    log_message(debug_buf);
+    
+    int task_id = queue_add_task_file(filename, correct_upload_path, session_id, client_fd, 
+                                       bbox, epsilon, show_segments, 
+                                       dist_idx1, dist_idx2, 0);
+    
+    if (task_id > 0) {
+        char logbuf[256];
+        snprintf(logbuf, sizeof(logbuf), "[INOTIFY] Task %d created for file %s (session %d)", 
+                 task_id, filename, session_id);
+        log_message(logbuf);
+    }
+}
 // Formateaza un raspuns text cu statistici despre timpul mediu de executie al comenzilor.
 // Rezultatul este scris in bufferul primit ca parametru.
 void format_avg_time_response(char *buffer, size_t bufsize) {
@@ -358,8 +464,67 @@ int force_disconnect_client(int session_id) {
     
     return found;
 }
+
+// Funcție auxiliară care parcurge lista și invalidează sesiunile inactive > 60s
+static void check_expired_sessions(void) {
+    time_t now = time(NULL);
+    pthread_mutex_lock(&session_mutex);
+    client_session_t *curr = sessions, *prev = NULL;
+    
+    while (curr) {
+        if (now - curr->last_activity > 60) { // 60 secunde timeout
+            char logbuf[128];
+            snprintf(logbuf, sizeof(logbuf), "[MONITOR] Expired session %d (%s)", curr->session_id, curr->username);
+            log_message(logbuf);
+            
+            // Închide socket-ul clientului dacă există
+            int client_fd = session_sock_get_fd(curr->session_id);
+            if (client_fd > 0) {
+                shutdown(client_fd, SHUT_RDWR);
+                close(client_fd);
+                session_sock_remove(curr->session_id);
+            }
+            
+            if (prev) prev->next = curr->next;
+            else sessions = curr->next;
+            
+            client_session_t *to_free = curr;
+            curr = curr->next;
+            free(to_free);
+        } else {
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+    pthread_mutex_unlock(&session_mutex);
+}
+// Funcția executată de thread-ul de monitorizare
+void *session_monitor(void *arg) {
+    (void)arg;
+    struct timespec wake_time;
+    
+    log_message("[MONITOR] Session monitor thread started");
+    
+    while (server_running) {
+        // Calculează când să se trezească automat (la fiecare 15 secunde)
+        clock_gettime(CLOCK_REALTIME, &wake_time);
+        wake_time.tv_sec += 15;
+
+        pthread_mutex_lock(&monitor_mutex);
+        // Așteaptă fie semnal, fie timeout. Mutex-ul este deblocat automat în timpul așteptării.
+        pthread_cond_timedwait(&monitor_cond, &monitor_mutex, &wake_time);
+        pthread_mutex_unlock(&monitor_mutex);
+
+        // La trezire (fie prin cond_signal, fie prin timeout), verifică sesiunile expirate
+        check_expired_sessions();
+    }
+    
+    log_message("[MONITOR] Session monitor thread stopped");
+    return NULL;
+}
 // Thread pentru curățarea task-urilor finalizate vechi
 void *completed_task_cleanup(void *arg) {
+        pthread_barrier_wait(&startup_barrier);
     (void)arg;
     while (1) {
         sleep(60); // Verifică la fiecare minut
@@ -406,6 +571,148 @@ void *completed_task_cleanup(void *arg) {
 
 
 
+static void process_outgoing_file(const char *filepath) {
+    if (strstr(filepath, ".lock") != NULL) {
+        return;
+    }
+    
+    char *basename = strrchr(filepath, '/');
+    if (!basename) basename = (char*)filepath;
+    else basename++;
+    
+    int task_id = 0;
+    if (sscanf(basename, "task_%d_result.csv", &task_id) != 1) {
+        return;
+    }
+    
+    char debug_buf[256];
+    snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] process_outgoing_file: task_id=%d, file=%s", task_id, filepath);
+    log_message(debug_buf);
+    
+    queue_task_t *task = NULL;
+    int retries = 0;
+    const int max_retries = 20;  // Creștem la 20 de încercări
+    while (retries < max_retries && task == NULL) {
+        pthread_mutex_lock(&completed_mutex);
+        task = completed_head;
+        while (task) {
+            if (task->task_id == task_id && task->status == 2) {
+                break;
+            }
+            task = task->next;
+        }
+        pthread_mutex_unlock(&completed_mutex);
+        
+        if (task == NULL && retries < max_retries - 1) {
+            struct timespec wait = {0, 50000000L};  // 50ms
+            nanosleep(&wait, NULL);
+            retries++;
+        } else {
+            break;
+        }
+    }
+    
+    if (task == NULL) {
+        snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Task %d not found in completed list after %d retries", task_id, retries);
+        log_message(debug_buf);
+        return;
+    }
+    
+    if (task->client_id > 0) {
+        int client_fd = session_sock_get_fd(task->client_id);
+        snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Found task %d, client_fd=%d, client_id=%d", task_id, client_fd, task->client_id);
+        log_message(debug_buf);
+        
+        if (client_fd > 0 && task->result.ready != 2) {
+            msgHeaderType notify_h;
+            notify_h.clientID = task->client_id;
+            notify_h.opID = OPR_ASYNC_NOTIFY;
+            notify_h.requestID = 0;
+            char task_str[32];
+            snprintf(task_str, sizeof(task_str), "%d", task_id);
+            writeSingleString(client_fd, notify_h, task_str);
+            task->result.ready = 2;
+            
+            char logbuf[256];
+            snprintf(logbuf, sizeof(logbuf), "[INOTIFY] Async notification sent for task %d", task_id);
+            log_message(logbuf);
+        } else {
+            snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Cannot send notification: client_fd=%d, ready=%d", client_fd, task->result.ready);
+            log_message(debug_buf);
+        }
+    } else {
+        snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Task %d has no client", task_id);
+        log_message(debug_buf);
+    }
+}
+
+void *inotify_thread_func(void *arg) {
+    pthread_barrier_wait(&startup_barrier);
+    (void)arg;
+    
+    char buf[4096] __attribute__((aligned(8)));
+    ssize_t len;
+    
+    inotify_fd = inotify_init1(IN_NONBLOCK);
+    if (inotify_fd < 0) {
+        log_message("[INOTIFY] Failed to initialize inotify");
+        return NULL;
+    }
+    
+    int wd_uploads = inotify_add_watch(inotify_fd, "processing/uploads", 
+                                         IN_CLOSE_WRITE | IN_MOVED_TO);
+    int wd_outgoing = inotify_add_watch(inotify_fd, "processing/outgoing", 
+                                         IN_CLOSE_WRITE | IN_MOVED_TO);
+    
+    if (wd_uploads < 0) {
+        log_message("[INOTIFY] Failed to add watch on uploads");
+    }
+    if (wd_outgoing < 0) {
+        log_message("[INOTIFY] Failed to add watch on outgoing");
+    }
+    
+    log_message("[INOTIFY] Started monitoring processing/uploads and processing/outgoing");
+    
+    fd_set fds;
+    struct timeval tv;
+    
+    while (1) {
+        FD_ZERO(&fds);
+        FD_SET(inotify_fd, &fds);
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        
+        if (select(inotify_fd + 1, &fds, NULL, NULL, &tv) > 0) {
+            len = read(inotify_fd, buf, sizeof(buf));
+            if (len <= 0) continue;
+            
+            char *ptr = buf;
+            while (ptr < buf + len) {
+                struct inotify_event *event = (struct inotify_event*)ptr;
+                
+                if (event->len > 0 && !(event->mask & IN_ISDIR)) {
+                    if (event->wd == wd_uploads) {
+                        char fullpath[512];
+                        snprintf(fullpath, sizeof(fullpath), "processing/uploads/%s", event->name);
+                        char debug_buf[1024];
+                        snprintf(debug_buf, sizeof(debug_buf), "[INOTIFY] Event name: '%s', fullpath: '%s'", event->name, fullpath);
+                        log_message(debug_buf);
+                        process_uploaded_file(fullpath);
+                    } else if (event->wd == wd_outgoing) {
+                        char fullpath[512];
+                        snprintf(fullpath, sizeof(fullpath), "processing/outgoing/%s", event->name);
+                        process_outgoing_file(fullpath);
+                    }
+                }
+                ptr += sizeof(struct inotify_event) + event->len;
+            }
+        }
+    }
+    
+    close(inotify_fd);
+    return NULL;
+}
+// Proceseaza efectiv un task GEO extras din coada.
 // Proceseaza efectiv un task GEO extras din coada.
 static void process_task_real(queue_task_t *task) {
     pointMsgType *points = task->points;
@@ -583,7 +890,7 @@ static void process_task_real(queue_task_t *task) {
         log_message(warnbuf);
     }
     
-    // Store results in task->result instead of sending via socket
+    // Store results in task->result
     snprintf(task->result.total_distance, sizeof(task->result.total_distance), "%.6f", total_distance);
     snprintf(task->result.point_count, sizeof(task->result.point_count), "%d", point_count);
     snprintf(task->result.segment_count, sizeof(task->result.segment_count), "%d", segment_count);
@@ -597,6 +904,18 @@ static void process_task_real(queue_task_t *task) {
     snprintf(task->result.show_segments, sizeof(task->result.show_segments), "%d", task->show_segments);
     task->result.ready = 1;
     
+    // MUTĂ task-ul în completed_head IMEDIAT după calcul (înainte de a scrie CSV-ul)
+    pthread_mutex_lock(&completed_mutex);
+    task->next = NULL;
+    if (completed_tail) {
+        completed_tail->next = task;
+        completed_tail = task;
+    } else {
+        completed_head = completed_tail = task;
+    }
+    pthread_mutex_unlock(&completed_mutex);
+    
+    // ABIA ACUM scrie fișierul CSV
     char output_file[512];
     snprintf(output_file, sizeof(output_file), "processing/outgoing/task_%d_result.csv", task->task_id);
     
@@ -649,7 +968,6 @@ static void process_task_real(queue_task_t *task) {
         log_message(errbuf);
     }
 
-    
     // Actualizeaza statisticile globale ale serverului dupa procesare
     stats_add_processed(point_count, total_distance, task->filename);
     
@@ -677,6 +995,9 @@ int queue_add_task_full(const char *filename, int client_id, int sock_fd, int po
     
     // Initializare campuri de baza pentru task-ul nou
     task->task_id = next_task_id++;
+    char debug_id[256];
+snprintf(debug_id, sizeof(debug_id), "[DEBUG] Created task with ID: %d (next will be: %d)", task->task_id, next_task_id);
+log_message(debug_id);
     task->request_id = request_id;
     strncpy(task->filename, filename, sizeof(task->filename) - 1);
     task->filename[sizeof(task->filename) - 1] = '\0';
@@ -712,8 +1033,8 @@ int queue_add_task_full(const char *filename, int client_id, int sock_fd, int po
     }
     
     // Notifica thread-ul procesor ca exista un task nou de preluat
-    pthread_cond_signal(&queue_cond);
-    notify_queue();  // Notifică și prin pipe
+    sem_post(&queue_sem);
+    // notify_queue();  // Notifică și prin pipe
     pthread_mutex_unlock(&queue_mutex);
     
     // Mesaj de log pentru urmarirea task-urilor adaugate
@@ -881,82 +1202,29 @@ int get_task_result(int task_id, task_result_t *result) {
     return 0;
 }
 
-// Thread-ul care consuma task-uri din coada si le proceseaza unul cate unul.
+// Noua metodă cu semafor (înlocuiește pipe-ul și condition variable)
 void *queue_processor(void *arg) {
+    pthread_barrier_wait(&startup_barrier);
     (void)arg;
     char logbuf[128];
     char hist_entry[600];
-    char dummy;
     
-    // Obține descriptorul pipe-ului pentru citire
-    int pipe_fd = get_notify_pipe_read_fd();
-    if (pipe_fd < 0) {
-        log_message("[QUEUE] No notify pipe available, using cond wait fallback");
-        // Fallback la vechea metodă
-        while (1) {
-            pthread_mutex_lock(&queue_mutex);
-            while (queue_head == NULL) {
-                pthread_cond_wait(&queue_cond, &queue_mutex);
-            }
-            queue_task_t *task = queue_head;
-            queue_head = queue_head->next;
-            if (queue_head == NULL) queue_tail = NULL;
-            pthread_mutex_unlock(&queue_mutex);
-            
-            // Procesare task...
-            task->status = 1;
-            snprintf(logbuf, sizeof(logbuf), "[QUEUE] Processing task %d (%d points)", 
-                     task->task_id, task->point_count);
-            log_message(logbuf);
-            
-            process_task_real(task);
-            
-            task->status = 2;
-            task->end_time = time(NULL);
-            
-            long exec_time_ms = (task->end_time - task->start_time) * 1000;
-            snprintf(logbuf, sizeof(logbuf), "[QUEUE] Task %d completed in %ld ms", 
-                     task->task_id, exec_time_ms);
-            log_message(logbuf);
-            
-            snprintf(hist_entry, sizeof(hist_entry), "Task %d: %s (%d puncte)", 
-                     task->task_id, task->filename, task->point_count);
-            add_to_history(hist_entry, exec_time_ms);
-            
-            pthread_mutex_lock(&completed_mutex);
-            task->next = NULL;
-            if (completed_tail) {
-                completed_tail->next = task;
-                completed_tail = task;
-            } else {
-                completed_head = completed_tail = task;
-            }
-            pthread_mutex_unlock(&completed_mutex);
-        }
-        return NULL;
-    }
+    log_message("[QUEUE] Processor started with semaphore");
     
-    // Noua metodă cu pipe
     while (1) {
-        // Așteaptă notificare pe pipe
-        if (read(pipe_fd, &dummy, 1) < 0) {
-            if (errno == EINTR) continue;
-            log_message("[QUEUE] Pipe read error");
-            continue;
-        }
-        
-        // Verifică dacă există task-uri în coadă
-        pthread_mutex_lock(&queue_mutex);
-        if (queue_head == NULL) {
-            pthread_mutex_unlock(&queue_mutex);
-            continue;
-        }
+        // Așteaptă un task disponibil (decrementează semaforul)
+        sem_wait(&queue_sem);
         
         // Extrage primul task din coadă
+        pthread_mutex_lock(&queue_mutex);
         queue_task_t *task = queue_head;
-        queue_head = queue_head->next;
-        if (queue_head == NULL) queue_tail = NULL;
+        if (task) {
+            queue_head = queue_head->next;
+            if (queue_head == NULL) queue_tail = NULL;
+        }
         pthread_mutex_unlock(&queue_mutex);
+        
+        if (!task) continue;
         
         // Verifică dacă task-ul a fost anulat înainte de procesare
         if (task->cancel_flag) {
@@ -1018,7 +1286,6 @@ void *queue_processor(void *arg) {
     return NULL;
 }
 
-// Creeaza o sesiune noua pentru un utilizator autentificat.
 int session_create(const char *username) {
     pthread_mutex_lock(&session_mutex);
     
@@ -1028,7 +1295,6 @@ int session_create(const char *username) {
         return -1;
     }
     
-    // Initializeaza datele sesiunii si o adauga la inceputul listei de sesiuni active
     new_session->session_id = next_session_id++;
     strncpy(new_session->username, username, sizeof(new_session->username) - 1);
     new_session->authenticated = 1;
@@ -1040,14 +1306,17 @@ int session_create(const char *username) {
     int session_id = new_session->session_id;
     pthread_mutex_unlock(&session_mutex);
     
-    // Scrie in log crearea sesiunii
+    // Semnalizează monitorul că s-a schimbat ceva
+    pthread_mutex_lock(&monitor_mutex);
+    pthread_cond_signal(&monitor_cond);
+    pthread_mutex_unlock(&monitor_mutex);
+    
     char logbuf[256];
     snprintf(logbuf, sizeof(logbuf), "[SESSION] Created session %d for user %s", session_id, username);
     log_message(logbuf);
     
     return session_id;
 }
-
 // Verifica daca o sesiune exista si este autentificata.
 int session_validate(int session_id) {
     pthread_mutex_lock(&session_mutex);
@@ -1107,6 +1376,11 @@ void session_update_activity(int session_id) {
     }
     
     pthread_mutex_unlock(&session_mutex);
+    
+    // Semnalizează monitorul că s-a schimbat ceva
+    pthread_mutex_lock(&monitor_mutex);
+    pthread_cond_signal(&monitor_cond);
+    pthread_mutex_unlock(&monitor_mutex);
 }
 
 // Verifica user-ul si parola comparand cu intrarile din fisierul de parole.
@@ -1290,9 +1564,14 @@ int terminate_session(int session_id) {
 }
 
 // Adaugă un task pentru un fișier deja salvat pe disc (nu puncte în memorie)
+// Adaugă un task pentru un fișier deja salvat pe disc (nu puncte în memorie)
 int queue_add_task_file(const char *filename, const char *upload_path, int client_id, int sock_fd,
                         const char *bbox, double epsilon, int show_segments,
                         int dist_idx1, int dist_idx2, int request_id) {
+    char debug_buf[1024];
+    snprintf(debug_buf, sizeof(debug_buf), "[DEBUG] queue_add_task_file: upload_path='%s'", upload_path);
+    log_message(debug_buf);
+    
     queue_task_t *task = malloc(sizeof(queue_task_t));
     if (!task) return -1;
 
@@ -1303,6 +1582,9 @@ int queue_add_task_file(const char *filename, const char *upload_path, int clien
     task->cancel_flag = 0;                        
     strncpy(task->upload_path, upload_path, sizeof(task->upload_path)-1);
     task->upload_path[sizeof(task->upload_path)-1] = '\0';
+    
+    snprintf(debug_buf, sizeof(debug_buf), "[DEBUG] task->upload_path='%s'", task->upload_path);
+    log_message(debug_buf);
 
     if (bbox) {
         strncpy(task->bbox, bbox, sizeof(task->bbox)-1);
@@ -1332,7 +1614,7 @@ int queue_add_task_file(const char *filename, const char *upload_path, int clien
     } else {
         queue_head = queue_tail = task;
     }
-    pthread_cond_signal(&queue_cond);
+    sem_post(&queue_sem);
     notify_queue();  // Notifică și prin pipe
     pthread_mutex_unlock(&queue_mutex);
 
