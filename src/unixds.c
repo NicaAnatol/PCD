@@ -1,8 +1,9 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../include/proto.h"      // Pentru structuri, constante si functii comune ale serverului
 #include "../include/logging.h"    // Pentru logarea evenimentelor si erorilor
 #include <../include/config.h>     // Pentru configuratia globala a serverului
 #include <sys/time.h>              // Pentru struct timeval folosit la select() si timeout-uri
-
+extern pthread_barrier_t startup_barrier;
 // Declaratii externe pentru functiile implementate in alte module.
 // Acestea sunt folosite aici pentru statistici, istoric, sesiuni si administrare.
 extern void get_stats(server_stats_t *stats);
@@ -53,33 +54,30 @@ void format_clients_response(char *buffer, size_t bufsize) {
 // Thread-ul principal pentru interfata administrativa pe socket UNIX.
 // Permite conectarea unui singur admin si interpretarea comenzilor text primite de la acesta.
 void *unix_main(void *args) {
+    pthread_barrier_wait(&startup_barrier);
     char *socket_path = (char *)args;
-    int sock, client_fd;
-    struct sockaddr_un addr;
-    socklen_t addr_len = sizeof(addr);
-    fd_set read_fds;
-    char buffer[4096];
+    int sock;
+    struct sockaddr_un addr, client_addr;
+    socklen_t client_addr_len;
+    char buffer[65536];
     ssize_t bytes;
-    int admin_connected = 0;
     struct timeval tv;
+    fd_set read_fds;
     
-    // Creeaza socket-ul local de tip UNIX stream
-    sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    // Creeaza socket-ul local de tip UNIX DGRAM (neconectat)
+    sock = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (sock < 0) {
         log_message("[UNIX] socket creation failed");
         pthread_exit(NULL);
     }
     
-    // Initializeaza adresa socket-ului UNIX
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
     strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path) - 1);
     addr.sun_path[sizeof(addr.sun_path) - 1] = '\0';
     
-    // Elimina vechiul socket, daca exista deja
     unlink(socket_path);
     
-    // Leaga socket-ul la calea locala specificata
     if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         char errbuf[256];
         snprintf(errbuf, sizeof(errbuf), "[UNIX] bind failed: %s", strerror(errno));
@@ -87,21 +85,14 @@ void *unix_main(void *args) {
         pthread_exit(NULL);
     }
     
-    // Trecerea socket-ului in stare de ascultare
-    if (listen(sock, g_config.max_clients) < 0) {
-        log_message("[UNIX] listen failed");
-        pthread_exit(NULL);
-    }
-    
     char logbuf[512];
-    snprintf(logbuf, sizeof(logbuf), "[UNIX] Trying to bind to path: '%s'", addr.sun_path);
+    snprintf(logbuf, sizeof(logbuf), "[UNIX] DGRAM socket bound to path: '%s'", addr.sun_path);
     log_message(logbuf);
     
     while (1) {
         FD_ZERO(&read_fds);
         FD_SET(sock, &read_fds);
         
-        // Timeout scurt pentru a nu bloca indefinit bucla de monitorizare
         tv.tv_sec = 1;
         tv.tv_usec = 0;
         
@@ -110,153 +101,110 @@ void *unix_main(void *args) {
         }
         
         if (FD_ISSET(sock, &read_fds)) {
-            // Daca exista deja un admin conectat, orice alta conexiune este refuzata
-            if (admin_connected) {
-                client_fd = accept(sock, (struct sockaddr *)&addr, &addr_len);
-                if (client_fd >= 0) {
-                    char msg[] = "Eroare: Un admin este deja conectat!\n";
-                    write(client_fd, msg, sizeof(msg)-1);
-                    close(client_fd);
-                }
-                continue;
+            client_addr_len = sizeof(client_addr);
+            bytes = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+                            (struct sockaddr *)&client_addr, &client_addr_len);
+            
+            if (bytes <= 0) continue;
+            
+            buffer[bytes] = '\0';
+            if (buffer[bytes - 1] == '\n') buffer[bytes - 1] = '\0';
+            
+            char response[65536];
+            response[0] = '\0';
+            char debug_msg[68000];
+snprintf(debug_msg, sizeof(debug_msg), "[UNIX] Received command: '%s'", buffer);
+log_message(debug_msg);
+            // Procesare comenzi (la fel ca înainte)
+            if (strcmp(buffer, "STATS") == 0) {
+                server_stats_t stats;
+                get_stats(&stats);
+                format_stats_response(&stats, response, sizeof(response));
             }
-            
-            // Accepta noua conexiune de administrare
-            client_fd = accept(sock, (struct sockaddr *)&addr, &addr_len);
-            if (client_fd < 0) continue;
-            
-            admin_connected = 1;
-            log_message("[UNIX] Admin connected");
-            
-            // Seteaza timeout pentru receptia de la clientul admin
-            struct timeval timeout;
-            timeout.tv_sec = 60;
-            timeout.tv_usec = 0;
-            setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            
-            while (admin_connected) {
-                // Citeste o comanda text de la admin
-                bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-                
-                if (bytes <= 0) {
-                    break;
+            else if (strcmp(buffer, "CLIENTS") == 0) {
+                format_clients_response(response, sizeof(response));
+            }
+            else if (strcmp(buffer, "HISTORY") == 0) {
+                format_history_response(response, sizeof(response));
+            }
+            else if (strcmp(buffer, "QUEUE") == 0) {
+                format_queue_response(response, sizeof(response));
+            }
+            else if (strcmp(buffer, "AVG_TIME") == 0) {
+                format_avg_time_response(response, sizeof(response));
+            }
+            else if (strcmp(buffer, "SESSIONS") == 0) {
+                format_sessions_response(response, sizeof(response));
+            }
+            else if (strcmp(buffer, "PROCESSES") == 0) {
+                pid_t pid = fork();
+                if (pid == 0) {
+                    stats_increment_processes();
+                    sleep(5);
+                    stats_decrement_processes();
+                    _exit(0);
                 }
-                
-                buffer[bytes] = '\0';
-                
-                // Elimina newline-ul de la final, daca exista
-                if (buffer[bytes - 1] == '\n') buffer[bytes - 1] = '\0';
-                
-                // Comanda pentru statistici generale
-                if (strcmp(buffer, "STATS") == 0) {
-                    server_stats_t stats;
-                    get_stats(&stats);
-                    format_stats_response(&stats, buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda pentru afisarea clientilor activi si a configuratiei de baza
-                else if (strcmp(buffer, "CLIENTS") == 0) {
-                    format_clients_response(buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda pentru istoric
-                else if (strcmp(buffer, "HISTORY") == 0) {
-                    format_history_response(buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda pentru afisarea task-urilor din coada
-                else if (strcmp(buffer, "QUEUE") == 0) {
-                    format_queue_response(buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda pentru timpul mediu de executie
-                else if (strcmp(buffer, "AVG_TIME") == 0) {
-                    format_avg_time_response(buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda pentru afisarea sesiunilor active
-                else if (strcmp(buffer, "SESSIONS") == 0) {
-                    format_sessions_response(buffer, sizeof(buffer));
-                    write(client_fd, buffer, strlen(buffer));
-                }
-                // Comanda de test pentru creare proces copil
-                else if (strcmp(buffer, "PROCESSES") == 0) {
-                    pid_t pid = fork();
-                    if (pid == 0) {
-                        stats_increment_processes();
-                        sleep(5);
-                        stats_decrement_processes();
-                        _exit(0);
-                    }
-                    char msg[] = "Proces creat (fork test)\n";
-                    write(client_fd, msg, sizeof(msg)-1);
-                }
-                // Comanda pentru terminarea unei sesiuni dupa ID
-                else if (strncmp(buffer, "KILL", 4) == 0) {
-                    int session_id = atoi(buffer + 5);
-                    if (terminate_session(session_id)) {
-                        char msg[] = "Sesiune terminata\n";
-                        write(client_fd, msg, sizeof(msg)-1);
-                    } else {
-                        char msg[] = "Sesiune negasita\n";
-                        write(client_fd, msg, sizeof(msg)-1);
-                    }
-                }
-                else if (strncmp(buffer, "BLOCK_IP", 8) == 0) {
-                    char *ip = buffer + 9;
-                    blacklist_add(ip);
-                    write(client_fd, "IP blocked.\n", 12);
-                }
-                else if (strncmp(buffer, "UNBLOCK_IP", 10) == 0) {
-                    char *ip = buffer + 11;
-                    blacklist_remove(ip);
-                    write(client_fd, "IP unblocked.\n", 14);
-                }
-                else if (strncmp(buffer, "CANCEL", 6) == 0) {
-                    int task_id = atoi(buffer + 7);
-                    if (cancel_task(task_id))
-                        write(client_fd, "Task cancelled.\n", 16);
-                    else
-                        write(client_fd, "Task not found or already done.\n", 32);
-                }
-                else if (strncmp(buffer, "BLOCK_DOMAIN", 12) == 0) {
-                    char *domain = buffer + 13;
-                    domain_blacklist_add(domain);
-                    write(client_fd, "Domain blocked.\n", 16);
-                }
-                else if (strncmp(buffer, "UNBLOCK_DOMAIN", 14) == 0) {
-                    char *domain = buffer + 15;
-                    domain_blacklist_remove(domain);
-                    write(client_fd, "Domain unblocked.\n", 18);
-                }
-                else if (strncmp(buffer, "FORCE_DISCONNECT", 16) == 0) {
-                    int session_id = atoi(buffer + 17);
-                    // Apelează o funcție care închide socket-ul clientului cu acel session_id
-                    if (force_disconnect_client(session_id)) {
-                        write(client_fd, "Client disconnected.\n", 21);
-                    } else {
-                        write(client_fd, "Client not found.\n", 18);
-                    }
-                }
-                // Comanda simpla de verificare a conectivitatii
-                else if (strcmp(buffer, "PING") == 0) {
-                    write(client_fd, "PONG", 4);
-                }
-                // Inchide sesiunea de administrare
-                else if (strcmp(buffer, "EXIT") == 0) {
-                    break;
-                }
-                // Afiseaza lista de comenzi disponibile daca cererea nu este recunoscuta
-                else {
-                    char msg[] = "Comenzi: STATS, CLIENTS, HISTORY, QUEUE, AVG_TIME, SESSIONS, PROCESSES, KILL <id>, EXIT\n";
-                    write(client_fd, msg, sizeof(msg)-1);
+                snprintf(response, sizeof(response), "Proces creat (fork test)\n");
+            }
+            else if (strncmp(buffer, "KILL", 4) == 0) {
+                int session_id = atoi(buffer + 5);
+                if (terminate_session(session_id)) {
+                    snprintf(response, sizeof(response), "Sesiune terminata\n");
+                } else {
+                    snprintf(response, sizeof(response), "Sesiune negasita\n");
                 }
             }
+            else if (strncmp(buffer, "BLOCK_IP", 8) == 0) {
+                char *ip = buffer + 9;
+                blacklist_add(ip);
+                snprintf(response, sizeof(response), "IP blocked.\n");
+            }
+            else if (strncmp(buffer, "UNBLOCK_IP", 10) == 0) {
+                char *ip = buffer + 11;
+                blacklist_remove(ip);
+                snprintf(response, sizeof(response), "IP unblocked.\n");
+            }
+            else if (strncmp(buffer, "CANCEL", 6) == 0) {
+                int task_id = atoi(buffer + 7);
+                if (cancel_task(task_id))
+                    snprintf(response, sizeof(response), "Task cancelled.\n");
+                else
+                    snprintf(response, sizeof(response), "Task not found or already done.\n");
+            }
+            else if (strncmp(buffer, "BLOCK_DOMAIN", 12) == 0) {
+                char *domain = buffer + 13;
+                domain_blacklist_add(domain);
+                snprintf(response, sizeof(response), "Domain blocked.\n");
+            }
+            else if (strncmp(buffer, "UNBLOCK_DOMAIN", 14) == 0) {
+                char *domain = buffer + 15;
+                domain_blacklist_remove(domain);
+                snprintf(response, sizeof(response), "Domain unblocked.\n");
+            }
+            else if (strncmp(buffer, "FORCE_DISCONNECT", 16) == 0) {
+                int session_id = atoi(buffer + 17);
+                if (force_disconnect_client(session_id)) {
+                    snprintf(response, sizeof(response), "Client disconnected.\n");
+                } else {
+                    snprintf(response, sizeof(response), "Client not found.\n");
+                }
+            }
+            else if (strcmp(buffer, "PING") == 0) {
+                snprintf(response, sizeof(response), "PONG");
+            }
+            else if (strcmp(buffer, "EXIT") == 0) {
+                snprintf(response, sizeof(response), "Goodbye\n");
+            }
+            else {
+                snprintf(response, sizeof(response), "Comenzi: STATS, CLIENTS, HISTORY, QUEUE, AVG_TIME, SESSIONS, PROCESSES, KILL <id>, EXIT\n");
+            }
             
-            // Inchide conexiunea admin dupa terminarea sesiunii
-            close(client_fd);
-            admin_connected = 0;
-            log_message("[UNIX] Admin disconnected");
+            // Trimite raspunsul folosind sendto
+            ssize_t sent = sendto(sock, response, strlen(response), 0,
+                   (struct sockaddr *)&client_addr, client_addr_len);
+char debug[70000];
+snprintf(debug, sizeof(debug), "[UNIX] Sent response: %ld bytes, response='%s'", (long)sent, response);
+log_message(debug);
         }
     }
     
@@ -264,3 +212,4 @@ void *unix_main(void *args) {
     unlink(socket_path);
     pthread_exit(NULL);
 }
+    

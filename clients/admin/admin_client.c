@@ -7,11 +7,14 @@
 #include <sys/un.h>         // Pentru socket-uri locale de tip UNIX
 #include <time.h>           // Pentru time() si gestionarea timeout-ului
 #include <signal.h>         // Pentru lucrul cu semnale, daca este extins ulterior
-
+#include <fcntl.h>
+#include <sys/time.h>
+#include <unistd.h>
 #define UNIX_SOCKET_PATH "/tmp/geods.sock"
-#define BUFFER_SIZE 8192
+#define BUFFER_SIZE 65536 
 #define TIMEOUT_SEC 60
-
+static struct sockaddr_un server_addr;
+static int server_addr_initialized = 0;
 // Socket-ul folosit pentru comunicarea cu serverul admin
 static int sock = -1;
 
@@ -22,53 +25,81 @@ static volatile int timeout_counter = 0;
 static WINDOW *main_wnd, *stats_wnd;
 
 // Realizeaza conexiunea la serverul admin prin socket UNIX.
+// Realizeaza conexiunea la serverul admin prin socket UNIX.
+// Realizeaza conexiunea la serverul admin prin socket UNIX.
 int connect_to_server(void) {
     int s;
-    struct sockaddr_un addr;
+    struct sockaddr_un client_addr;
     
-    // Creeaza socket-ul local de tip stream
-    s = socket(AF_UNIX, SOCK_STREAM, 0);
+    // Creeaza socket-ul local de tip DGRAM
+    s = socket(AF_UNIX, SOCK_DGRAM, 0);
     if (s < 0) return -1;
     
-    // Configureaza adresa socket-ului UNIX
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, UNIX_SOCKET_PATH, sizeof(addr.sun_path) - 1);
+    // Configureaza adresa clientului (bind explicit)
+    memset(&client_addr, 0, sizeof(client_addr));
+    client_addr.sun_family = AF_UNIX;
+    snprintf(client_addr.sun_path, sizeof(client_addr.sun_path), "/tmp/geods_client_%d", getpid());
     
-    // Incearca conectarea la server
-    if (connect(s, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    // Elimina socket-ul vechi daca exista
+    unlink(client_addr.sun_path);
+    
+    // Leaga socket-ul clientului la o adresa unica
+    if (bind(s, (struct sockaddr *)&client_addr, sizeof(client_addr)) < 0) {
+        write(STDERR_FILENO, "bind failed\n", 12);
         close(s);
         return -1;
     }
     
+    // Configureaza adresa serverului
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sun_family = AF_UNIX;
+    strncpy(server_addr.sun_path, UNIX_SOCKET_PATH, sizeof(server_addr.sun_path) - 1);
+    
+    server_addr_initialized = 1;
     return s;
 }
 
 // Trimite o comanda text catre server si citeste raspunsul acestuia.
-int send_command(const char *cmd, char *response, size_t resp_size) {
-    if (sock < 0) return -1;
+int send_command(const char *cmd, char *response, size_t resp_size, int wait_for_response) {
+    if (sock < 0 || !server_addr_initialized) return -1;
     
-    // Trimite comanda catre server
-    write(sock, cmd, strlen(cmd));
-    
-    // Pauza scurta pentru a permite serverului sa pregateasca raspunsul
-    struct timespec req = {0, 100000000L};
-    struct timespec rem;
-    nanosleep(&req, &rem);
-    
-    // Citeste raspunsul primit
-    ssize_t bytes = read(sock, response, resp_size - 1);
-    if (bytes > 0) {
-        response[bytes] = '\0';
-        return bytes;
+    // Trimite comanda
+    ssize_t sent = sendto(sock, cmd, strlen(cmd), 0, (struct sockaddr *)&server_addr, sizeof(server_addr));
+    if (sent < 0) {
+        write(STDERR_FILENO, "sendto failed\n", 14);
+        return -1;
     }
+    
+    if (!wait_for_response) {
+        // Nu așteaptă răspuns
+        return 0;
+    }
+    
+    // Așteaptă răspuns folosind select (timeout 5 secunde)
+    fd_set fds;
+    struct timeval tv;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    tv.tv_sec = 5;
+    tv.tv_usec = 0;
+    
+    int ret = select(sock + 1, &fds, NULL, NULL, &tv);
+    if (ret > 0) {
+        ssize_t bytes = recvfrom(sock, response, resp_size - 1, 0, NULL, NULL);
+        if (bytes > 0) {
+            response[bytes] = '\0';
+            return bytes;
+        }
+    }
+    
+    write(STDERR_FILENO, "recvfrom timeout or error\n", 26);
     return -1;
 }
 
 // Obtine de la server statisticile generale si le pune intr-un buffer.
 void format_stats(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("STATS", response, sizeof(response)) < 0) {
+    if (send_command("STATS", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la conectare\n");
         return;
     }
@@ -79,7 +110,7 @@ void format_stats(char *buffer, size_t size) {
 // Obtine lista clientilor activi.
 void format_clients(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("CLIENTS", response, sizeof(response)) < 0) {
+    if (send_command("CLIENTS", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea listei clientilor\n");
         return;
     }
@@ -90,7 +121,7 @@ void format_clients(char *buffer, size_t size) {
 // Obtine istoricul comenzilor procesate.
 void format_history(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("HISTORY", response, sizeof(response)) < 0) {
+    if (send_command("HISTORY", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea istoricului\n");
         return;
     }
@@ -101,7 +132,7 @@ void format_history(char *buffer, size_t size) {
 // Obtine continutul curent al cozii de procesare.
 void format_queue(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("QUEUE", response, sizeof(response)) < 0) {
+    if (send_command("QUEUE", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea cozii\n");
         return;
     }
@@ -112,7 +143,7 @@ void format_queue(char *buffer, size_t size) {
 // Obtine timpul mediu de procesare al comenzilor.
 void format_avg_time(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("AVG_TIME", response, sizeof(response)) < 0) {
+    if (send_command("AVG_TIME", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea timpului mediu\n");
         return;
     }
@@ -123,7 +154,7 @@ void format_avg_time(char *buffer, size_t size) {
 // Obtine lista sesiunilor active.
 void format_sessions(char *buffer, size_t size) {
     char response[BUFFER_SIZE];
-    if (send_command("SESSIONS", response, sizeof(response)) < 0) {
+    if (send_command("SESSIONS", response, sizeof(response),1) < 0) {
         snprintf(buffer, size, "Eroare la obtinerea sesiunilor\n");
         return;
     }
@@ -255,7 +286,7 @@ int main(void) {
     cbreak();
     noecho();
     curs_set(0);
-    timeout(100);
+    timeout(1);
     
     init_colors();
     
@@ -306,7 +337,7 @@ int main(void) {
                     break;
                 case '7':
                     // Trimite comanda de test pentru creare proces copil
-                    send_command("PROCESSES", NULL, 0);
+                    send_command("PROCESSES", NULL, 0,0);
                     break;
                 case '8': {
                     // Cere administratorului ID-ul sesiunii care trebuie terminata
@@ -320,7 +351,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "KILL %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'b': {
@@ -335,7 +366,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "BLOCK_IP %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'd': {
@@ -350,7 +381,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "UNBLOCK_IP %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 't': {
@@ -365,7 +396,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "CANCEL %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'B': {
@@ -380,7 +411,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "BLOCK_DOMAIN %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'U': {
@@ -395,7 +426,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "UNBLOCK_DOMAIN %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'f': {
@@ -410,7 +441,7 @@ int main(void) {
                     
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd), "FORCE_DISCONNECT %s", input);
-                    send_command(cmd, NULL, 0);
+                    send_command(cmd, NULL, 0,0);
                     break;
                 }
                 case 'q':
@@ -431,10 +462,13 @@ int main(void) {
     }
     
     // Notifica serverul despre iesirea din sesiunea admin
-    send_command("EXIT", NULL, 0);
+    send_command("EXIT", NULL,0, 0);
     close(sock);
     endwin();
     
     write(STDOUT_FILENO, "Admin disconected.\n", 18);
+    char client_path[256];
+    snprintf(client_path, sizeof(client_path), "/tmp/geods_client_%d", getpid());
+    unlink(client_path);
     return 0;
 }

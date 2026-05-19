@@ -8,6 +8,7 @@ import struct
 import math
 import time
 import threading
+import select
 
 OPR_UPLOAD_GEO = 1
 OPR_BYE = 6
@@ -18,6 +19,7 @@ OPR_GET_RESULT = 21
 OPR_CANCEL_TASK = 32
 OPR_UPLOAD_FILE = 50
 OPR_DOWNLOAD_FILE = 51
+OPR_ASYNC_NOTIFY = 60
 
 class GeoClient:
     def __init__(self, host='127.0.0.1', port=18081):
@@ -92,6 +94,35 @@ class GeoClient:
         str_data = self.recv_exact(str_len)
         return str_data.decode('utf-8'), request_id
     
+    def consume_async_notifications(self):
+        """Consumă toate notificările asincrone din buffer"""
+        while True:
+            ready, _, _ = select.select([self.sock], [], [], 0)
+            if not ready:
+                break
+            
+            try:
+                # Peek la header
+                header = self.sock.recv(16, socket.MSG_PEEK)
+                if len(header) < 16:
+                    break
+                
+                msg_size, client_id, op_id, request_id = struct.unpack('!IIII', header)
+                
+                if op_id == OPR_ASYNC_NOTIFY:
+                    # Consumă notificarea complet
+                    self.sock.recv(16)  # header
+                    len_data = self.sock.recv(4)
+                    str_len = struct.unpack('!I', len_data)[0]
+                    if str_len > 0 and str_len <= 256:
+                        str_data = self.sock.recv(str_len)
+                        task_id = str_data.decode('utf-8')
+                        print(f"\n[ASYNC] Task {task_id} completed. Use 'result {task_id}' to get results.")
+                else:
+                    break
+            except:
+                break
+    
     def do_login(self):
         try:
             user = input("Utilizator: ").strip()
@@ -105,8 +136,6 @@ class GeoClient:
         self.write_single_string(0, OPR_LOGIN, password, req_id)
         
         session_id, resp_req_id = self.read_single_int()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
         
         if session_id > 0:
             self.session_id = session_id
@@ -130,8 +159,6 @@ class GeoClient:
         self.write_single_string(0, OPR_REGISTER, password, req_id)
         
         session_id, resp_req_id = self.read_single_int()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
         
         if session_id > 0:
             self.session_id = session_id
@@ -144,13 +171,9 @@ class GeoClient:
     def check_task_status(self, task_id):
         """Verifică statusul unui task"""
         req_id = self.get_next_request_id()
-        print(f"[DEBUG] Sending CHECK_TASK for task_id={task_id}, session_id={self.session_id}, request_id={req_id}")
         self.write_single_int(self.session_id, OPR_CHECK_TASK, task_id, req_id)
-        print("[DEBUG] Waiting for response...")
+        
         status, resp_req_id = self.read_single_string()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
-        print(f"[DEBUG] Received status: '{status}'")
         print(f"{status}")
     
     def get_task_result(self, task_id):
@@ -159,10 +182,7 @@ class GeoClient:
         self.write_single_int(self.session_id, OPR_GET_RESULT, task_id, req_id)
         
         try:
-            total_distance_str, resp_req_id = self.read_single_string()
-            if resp_req_id != req_id:
-                print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
-            
+            total_distance_str, _ = self.read_single_string()
             point_count_str, _ = self.read_single_string()
             segment_count_str, _ = self.read_single_string()
             
@@ -213,24 +233,21 @@ class GeoClient:
         """Anulează un task (dacă nu a fost deja procesat)"""
         req_id = self.get_next_request_id()
         self.write_single_int(self.session_id, OPR_CANCEL_TASK, task_id, req_id)
-        response, resp_req_id = self.read_single_string()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
+        response, _ = self.read_single_string()
         print(f"{response}")
     
-
     def download_task_result(self, task_id):
         """Descarcă fișierul rezultat al unui task finalizat"""
+        self.consume_async_notifications()
+        
         req_id = self.get_next_request_id()
         self.write_single_int(self.session_id, OPR_DOWNLOAD_FILE, task_id, req_id)
         
         # Primește numele fișierului
-        filename, resp_req_id = self.read_single_string()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
+        filename, _ = self.read_single_string()
         
         # Primește dimensiunea
-        size, resp_req_id = self.read_single_int()
+        size, _ = self.read_single_int()
         
         # Creează directorul download/ dacă nu există
         os.makedirs("download", exist_ok=True)
@@ -299,10 +316,7 @@ class GeoClient:
             coord_str = f"{lat},{lon}"
             self.write_single_string(self.session_id, OPR_UPLOAD_GEO, coord_str, req_id)
         
-        # Primește task_id în loc de rezultate
-        task_id, resp_req_id = self.read_single_int()
-        if resp_req_id != req_id:
-            print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
+        task_id, _ = self.read_single_int()
         
         print(f"\n=== UPLOAD INITIAT ===")
         print(f"Task ID: {task_id}")
@@ -313,9 +327,10 @@ class GeoClient:
         return True
 
     def upload_raw_file(self, filename, bbox=None, epsilon=-1, show_segments=0, dist_idx1=0, dist_idx2=0):
-        """Upload fișier brut (fără parsare în client) - chunked transfer"""
+        """Upload fișier brut (chunked transfer)"""
+        self.consume_async_notifications()
+        
         try:
-            # Deschide fișierul
             with open(filename, 'rb') as f:
                 f.seek(0, os.SEEK_END)
                 file_size = f.tell()
@@ -344,7 +359,7 @@ class GeoClient:
                 
                 print("[CLIENT] GEO params sent, starting file transfer...")
                 
-                # Trimite conținutul fișierului în chunk-uri brute
+                # Trimite conținutul fișierului în chunk-uri
                 chunk_size = 8192
                 total_sent = 0
                 chunk_num = 0
@@ -366,9 +381,13 @@ class GeoClient:
                     return -1
                 
                 # Primește task_id
-                task_id, resp_req_id = self.read_single_int()
-                if resp_req_id != req_id:
-                    print(f"Warning: request_id mismatch! Sent {req_id}, got {resp_req_id}")
+                task_id, _ = self.read_single_int()
+                
+                if task_id == 0:
+                    print("\n[INFO] File uploaded successfully. Waiting for async notification...")
+                    # Așteaptă notificarea asincronă
+                    self.consume_async_notifications()
+                    return 0
                 
                 print(f"\n=== UPLOAD FILE INITIAT ===")
                 print(f"Task ID: {task_id}")
@@ -488,24 +507,20 @@ class GeoClient:
                 if not cmd:
                     continue
                 
-                # Parsează comanda și argumentele
                 parts = cmd.split()
                 if not parts:
                     continue
                 
-                # NU converti la lower() - păstrează comanda originală
                 command = parts[0]
                 
-                # Comanda de ieșire
+                # Consumă notificări înainte de fiecare comandă
+                self.consume_async_notifications()
+                
                 if command == 'exit' or command == 'quit':
                     break
-                
-                # Comanda help
                 elif command == 'help':
                     self.print_usage()
                     continue
-                
-                # Comanda status
                 elif command == 'status':
                     if len(parts) != 2:
                         print("Folosire: status <task_id>")
@@ -516,8 +531,6 @@ class GeoClient:
                     except ValueError:
                         print("Task ID invalid. Folositi un numar.")
                     continue
-                
-                # Comanda result
                 elif command == 'result':
                     if len(parts) != 2:
                         print("Folosire: result <task_id>")
@@ -528,8 +541,6 @@ class GeoClient:
                     except ValueError:
                         print("Task ID invalid. Folositi un numar.")
                     continue
-                
-                # Comanda cancel
                 elif command == 'cancel':
                     if len(parts) != 2:
                         print("Folosire: cancel <task_id>")
@@ -540,8 +551,6 @@ class GeoClient:
                     except ValueError:
                         print("Task ID invalid. Folositi un numar.")
                     continue
-                
-
                 elif command == 'download':
                     if len(parts) != 2:
                         print("Folosire: download <task_id>")
@@ -552,8 +561,6 @@ class GeoClient:
                     except ValueError:
                         print("Task ID invalid. Folositi un numar.")
                     continue
-                
-                # Comanda upload_raw
                 elif command == 'upload_raw':
                     if len(parts) < 2:
                         print("Folosire: upload_raw <fisier> [optiuni]")
@@ -597,8 +604,6 @@ class GeoClient:
                     
                     self.upload_raw_file(filename, bbox, epsilon, show_segments, dist_idx1, dist_idx2)
                     continue
-                
-                # Comanda upload (format text)
                 elif command == 'upload':
                     if len(parts) < 2:
                         print("Folosire: upload <fisier> [optiuni]")
@@ -649,10 +654,7 @@ class GeoClient:
                     self.send_points_to_server(points, os.path.basename(filename), bbox, epsilon, 
                                                 show_segments, dist_idx1, dist_idx2)
                     continue
-                
-                # Introducere directă puncte
                 else:
-                    # Verifică dacă sunt puncte (format "lat,lon")
                     points = self.parse_points_from_args(parts)
                     if not points:
                         print(f"Comanda necunoscuta: '{command}'. Folositi 'help' pentru ajutor.")

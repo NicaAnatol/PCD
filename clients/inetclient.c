@@ -11,6 +11,7 @@
 #include <arpa/inet.h>       // pentru inet_addr
 #include <errno.h>
 #include <sys/stat.h>        // pentru mkdir
+#include <sys/select.h>
 
 #define MAX_INPUT 256
 #define MAX_POINTS 100000
@@ -28,7 +29,7 @@
 #define OPR_CANCEL_TASK  32
 #define OPR_UPLOAD_FILE  50
 #define OPR_DOWNLOAD_FILE 51
-
+#define OPR_ASYNC_NOTIFY 60 
 // Date globale ale clientului curent
 static char current_user[64] = "";   // numele utilizatorului autentificat
 static int session_id = 0;           // ID-ul sesiunii active
@@ -56,6 +57,82 @@ typedef struct msgHeaderType {
     int requestID;  // ID-ul cererii (pentru corelare)
 } msgHeaderType;
 
+int peekMsgHeader(int sock, msgHeaderType *h) {
+    // Timeout mai lung pentru permit server să trimită
+    struct timeval tv = {0, 500000};  // 500ms timeout
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    
+    if (select(sock + 1, &fds, NULL, NULL, &tv) <= 0) {
+        return -1;  // Timeout sau eroare
+    }
+    
+    char full_header[16];
+    ssize_t nb = recv(sock, full_header, sizeof(full_header), MSG_PEEK);
+    if (nb != sizeof(full_header)) {
+        return -1;
+    }
+    
+    int *parts = (int*)full_header;
+    h->msgSize = ntohl(parts[0]);
+    h->clientID = ntohl(parts[1]);
+    h->opID = ntohl(parts[2]);
+    h->requestID = ntohl(parts[3]);
+    
+    return 0;
+}
+// Funcția care consumă notificările asincrone din buffer (string, nu int)
+void consume_async_notifications(int sock) {
+    while (1) {
+        struct timeval tv = {0, 0};
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(sock, &fds);
+        
+        // Verifică cu timeout 0 dacă sunt date disponibile
+        if (select(sock + 1, &fds, NULL, NULL, &tv) <= 0) {
+            break;  // Nici o notificare în coadă
+        }
+        
+        msgHeaderType h;
+        if (peekMsgHeader(sock, &h) != 0) {
+            break;  // Eroare la peek
+        }
+        
+        if (h.opID != OPR_ASYNC_NOTIFY) {
+            break;  // Nu e notificare, e alt mesaj
+        }
+        
+        // E o notificare - consumă-o complet
+        char header[16];
+        ssize_t n = recv(sock, header, 16, 0);
+        if (n != 16) break;
+        
+        char len_buf[4];
+        n = recv(sock, len_buf, 4, 0);
+        if (n != 4) break;
+        
+        int str_len = ntohl(*(int*)len_buf);
+        if (str_len <= 0 || str_len > 256) break;
+        
+        char *str = malloc(str_len + 1);
+        if (!str) break;
+        
+        n = recv(sock, str, str_len, 0);
+        if (n != str_len) {
+            free(str);
+            break;
+        }
+        
+        str[str_len] = '\0';
+        int task_id = atoi(str);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "\n[ASYNC] Task %d completed. Use 'result %d' to get results.\n", task_id, task_id);
+        write(STDOUT_FILENO, msg, strlen(msg));
+        free(str);
+    }
+}
 //writeSingleString with request_id (16 bytes header + 4 bytes length + content)
 int writeSingleString(int sock, msgHeaderType h, char *str) {
     int str_len = strlen(str);
@@ -79,18 +156,18 @@ int writeSingleString(int sock, msgHeaderType h, char *str) {
     return 0;
 }
 
-// read_single_string - returns string and request_id
+
+
+// read_single_string – citeste string fara consum de notificari
 char* read_single_string(int sock, int *ret_request_id) {
     char header[16];
     ssize_t received = 0;
-    
     while (received < 16) {
         ssize_t n = recv(sock, header + received, 16 - received, 0);
         if (n <= 0) return NULL;
         received += n;
     }
     
-    // Extrage request_id din header (bytes 12-16)
     if (ret_request_id) {
         *ret_request_id = ntohl(*(int*)(header + 12));
     }
@@ -104,6 +181,11 @@ char* read_single_string(int sock, int *ret_request_id) {
     }
     
     int str_len = ntohl(*(int*)len_buf);
+    
+    char dbg[256];
+    snprintf(dbg, sizeof(dbg), "[DEBUG] read_single_string: str_len=%d, request_id=%d\n", str_len, ret_request_id ? *ret_request_id : -1);
+    write(STDOUT_FILENO, dbg, strlen(dbg));
+    
     if (str_len <= 0 || str_len > 65536) return NULL;
     
     char *str = malloc(str_len + 1);
@@ -123,11 +205,10 @@ char* read_single_string(int sock, int *ret_request_id) {
     return str;
 }
 
-// readSingleInt - returns value and request_id
+
 int readSingleInt(int sock, msgIntType *m, int *ret_request_id) {
     char buffer[20];
     ssize_t received = 0;
-    
     while (received < 20) {
         ssize_t n = recv(sock, buffer + received, 20 - received, 0);
         if (n <= 0) {
@@ -136,11 +217,15 @@ int readSingleInt(int sock, msgIntType *m, int *ret_request_id) {
         }
         received += n;
     }
-    
     if (ret_request_id) {
-        *ret_request_id = ntohl(((int*)buffer)[3]);  // request_id e al 4-lea int (offset 12-16)
+        *ret_request_id = ntohl(((int*)buffer)[3]);
     }
-    m->msg = ntohl(((int*)buffer)[4]);  // ultimii 4 bytes sunt valoarea
+    m->msg = ntohl(((int*)buffer)[4]);
+    
+    char dbg[256];
+    snprintf(dbg, sizeof(dbg), "[DEBUG] readSingleInt: value=%d, request_id=%d\n", m->msg, ret_request_id ? *ret_request_id : -1);
+    write(STDOUT_FILENO, dbg, strlen(dbg));
+    
     return 0;
 }
 
@@ -159,7 +244,56 @@ int writeSingleInt(int sock, msgHeaderType h, int value) {
     if (sent != sizeof(buffer)) return -1;
     return 0;
 }
-
+void check_async_notifications(int sock) {
+    struct timeval tv = {0, 0};
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(sock, &fds);
+    
+    if (select(sock + 1, &fds, NULL, NULL, &tv) > 0) {
+        msgHeaderType h;
+        if (peekMsgHeader(sock, &h) == 0) {
+            char dbg[256];
+            snprintf(dbg, sizeof(dbg), "[DEBUG] peekMsgHeader: opID=%d, requestID=%d, msgSize=%d\n", 
+                     h.opID, h.requestID, h.msgSize);
+            write(STDOUT_FILENO, dbg, strlen(dbg));
+            
+            if (h.opID == OPR_ASYNC_NOTIFY) {
+                snprintf(dbg, sizeof(dbg), "[DEBUG] Processing ASYNC_NOTIFY\n");
+                write(STDOUT_FILENO, dbg, strlen(dbg));
+                
+                // Consumă header-ul (16 bytes)
+                char header[16];
+                recv(sock, header, 16, 0);
+                
+                // Citește lungimea stringului
+                char len_buf[4];
+                recv(sock, len_buf, 4, 0);
+                int str_len = ntohl(*(int*)len_buf);
+                
+                snprintf(dbg, sizeof(dbg), "[DEBUG] ASYNC str_len=%d\n", str_len);
+                write(STDOUT_FILENO, dbg, strlen(dbg));
+                
+                // Citește conținutul
+                if (str_len > 0 && str_len <= 256) {
+                    char *str = malloc(str_len + 1);
+                    if (str) {
+                        recv(sock, str, str_len, 0);
+                        str[str_len] = '\0';
+                        int task_id = atoi(str);
+                        char msg[256];
+                        snprintf(msg, sizeof(msg), "\n[ASYNC] Task %d completed. Use 'result %d' to get results.\n", task_id, task_id);
+                        write(STDOUT_FILENO, msg, strlen(msg));
+                        free(str);
+                    }
+                }
+            } else {
+                snprintf(dbg, sizeof(dbg), "[DEBUG] Not an ASYNC message, skipping\n");
+                write(STDOUT_FILENO, dbg, strlen(dbg));
+            }
+        }
+    }
+}
 int get_next_request_id(void) {
     pthread_mutex_lock(&request_mutex);
     int id = next_request_id++;
@@ -744,34 +878,58 @@ void cancel_task_client(int task_id) {
     }
 }
 
-
 void download_task_result(int task_id) {
+        consume_async_notifications(sock);
+    char debug[1024];
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] download_task_result called for task_id=%d\n", task_id);
+    write(STDOUT_FILENO, debug, strlen(debug));
+    
     msgHeaderType h;
     h.clientID = session_id;
     h.opID = OPR_DOWNLOAD_FILE;
     h.requestID = get_next_request_id();
-    int sent_req = h.requestID;
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] Sending download request with requestID=%d\n", h.requestID);
+    write(STDOUT_FILENO, debug, strlen(debug));
     
     writeSingleInt(sock, h, task_id);
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] Waiting for filename from server...\n");
+    write(STDOUT_FILENO, debug, strlen(debug));
     
     // Primește numele fișierului
     int recv_req;
     char *filename = read_single_string(sock, &recv_req);
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] read_single_string returned: filename=%p, recv_req=%d\n", (void*)filename, recv_req);
+    write(STDOUT_FILENO, debug, strlen(debug));
+    
     if (!filename) {
         write(STDERR_FILENO, "Eroare la primirea numelui fisierului\n", 37);
         return;
     }
     
-    if (recv_req != sent_req) {
-        char warn[128];
-        snprintf(warn, sizeof(warn), "Warning: request_id mismatch! Sent %d, got %d\n", sent_req, recv_req);
-        write(STDERR_FILENO, warn, strlen(warn));
-    }
+    snprintf(debug, sizeof(debug), "[DEBUG] Filename content: '%s', length=%zu\n", filename, strlen(filename));
+    write(STDOUT_FILENO, debug, strlen(debug));
     
     // Primește dimensiunea
+    snprintf(debug, sizeof(debug), "[DEBUG] Waiting for file size from server...\n");
+    write(STDOUT_FILENO, debug, strlen(debug));
+    
     msgIntType size_msg;
     readSingleInt(sock, &size_msg, &recv_req);
     size_t file_size = size_msg.msg;
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] Received file_size=%zu, recv_req=%d\n", file_size, recv_req);
+    write(STDOUT_FILENO, debug, strlen(debug));
+    
+    // Verifică dacă avem nume de fișier valid
+    if (strlen(filename) == 0) {
+        write(STDERR_FILENO, "Eroare: nume fisier gol primit de la server\n", 43);
+        free(filename);
+        return;
+    }
     
     // Creează directorul download/ dacă nu există
     mkdir("download", 0755);
@@ -779,16 +937,21 @@ void download_task_result(int task_id) {
     char output_path[512];
     snprintf(output_path, sizeof(output_path), "download/%s", filename);
     
-    char dbg[256];
-    snprintf(dbg, sizeof(dbg), "[CLIENT] Downloading file: %s, size: %zu bytes\n", filename, file_size);
-    write(STDOUT_FILENO, dbg, strlen(dbg));
+    snprintf(debug, sizeof(debug), "[CLIENT] Downloading file: %s, size: %zu bytes\n", filename, file_size);
+    write(STDOUT_FILENO, debug, strlen(debug));
     
     int out_fd = open(output_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (out_fd < 0) {
         free(filename);
-        write(STDERR_FILENO, "Eroare la crearea fisierului local\n", 35);
+        char err[128];
+        snprintf(err, sizeof(err), "Eroare la crearea fisierului local");
+        write(STDERR_FILENO, err, strlen(err));
+        write(STDERR_FILENO, "\n", 1);
         return;
     }
+    
+    snprintf(debug, sizeof(debug), "[DEBUG] Opened output file: %s, fd=%d\n", output_path, out_fd);
+    write(STDOUT_FILENO, debug, strlen(debug));
     
     // Primește chunk-uri și scrie în fișier
     char chunk[8192];
@@ -798,6 +961,11 @@ void download_task_result(int task_id) {
     while (received < file_size) {
         size_t to_read = (file_size - received) < sizeof(chunk) ? (file_size - received) : sizeof(chunk);
         ssize_t n = recv(sock, chunk, to_read, 0);
+        
+        snprintf(debug, sizeof(debug), "[DEBUG] recv returned %zd bytes, to_read=%zu, received=%zu/%zu\n", 
+                 n, to_read, received, file_size);
+        write(STDOUT_FILENO, debug, strlen(debug));
+        
         if (n <= 0) {
             error = 1;
             break;
@@ -811,11 +979,16 @@ void download_task_result(int task_id) {
     }
     close(out_fd);
     
+    snprintf(debug, sizeof(debug), "[DEBUG] Download loop finished: error=%d, received=%zu, file_size=%zu\n", 
+             error, received, file_size);
+    write(STDOUT_FILENO, debug, strlen(debug));
+    
     if (error || received != file_size) {
         unlink(output_path);
         char err[128];
-        snprintf(err, sizeof(err), "Eroare la descarcare: primiti %zu din %zu bytes\n", received, file_size);
+        snprintf(err, sizeof(err), "Eroare la descarcare: primiti %zu din %zu bytes", received, file_size);
         write(STDERR_FILENO, err, strlen(err));
+        write(STDERR_FILENO, "\n", 1);
     } else {
         char buf[1024];
         snprintf(buf, sizeof(buf), "\n=== DOWNLOAD COMPLET ===\nFisier salvat: %s (%zu bytes)\n", output_path, file_size);
@@ -823,6 +996,8 @@ void download_task_result(int task_id) {
     }
     
     free(filename);
+    snprintf(debug, sizeof(debug), "[DEBUG] download_task_result finished\n");
+    write(STDOUT_FILENO, debug, strlen(debug));
 }
 
 int parse_points_from_args(char *line, pointMsgType **points) {
@@ -856,6 +1031,7 @@ int parse_points_from_args(char *line, pointMsgType **points) {
 
 int upload_raw_file(const char *filename, const char *bbox, double epsilon,
                     int show_segments, int dist_idx1, int dist_idx2) {
+    consume_async_notifications(sock);
     char dbg[256];
     
     int fd = open(filename, O_RDONLY);
@@ -935,20 +1111,139 @@ int upload_raw_file(const char *filename, const char *bbox, double epsilon,
         write(STDERR_FILENO, "Eroare: dimensiune trimisa incorecta\n", 37);
         return -1;
     }
-    
+    (void)sent_req;
     write(STDOUT_FILENO, "[CLIENT] Waiting for task_id from server...\n", 43);
     
-    msgIntType task_id_msg;
-    int recv_req;
-    readSingleInt(sock, &task_id_msg, &recv_req);
-    
-    if (recv_req != sent_req) {
-        char warn[128];
-        snprintf(warn, sizeof(warn), "Warning: request_id mismatch! Sent %d, got %d\n", sent_req, recv_req);
-        write(STDERR_FILENO, warn, strlen(warn));
+    // Buclă care citește mesaje cu retry logic
+    int task_id = -1;
+    int retries = 0;
+    while (task_id == -1 && retries < 50) {
+        retries++;
+        
+        msgHeaderType h;
+        if (peekMsgHeader(sock, &h) != 0) {
+            // Timeout - retry cu small delay
+            struct timespec ts = {0, 50000000};  // 50ms
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        
+        if (h.opID == OPR_ASYNC_NOTIFY) {
+            // Consumă notificarea complet
+            char header[16];
+            ssize_t n = recv(sock, header, 16, 0);
+            if (n != 16) {
+                struct timespec ts = {0, 50000000};
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            
+            char len_buf[4];
+            n = recv(sock, len_buf, 4, 0);
+            if (n != 4) {
+                struct timespec ts = {0, 50000000};
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            
+            int str_len = ntohl(*(int*)len_buf);
+            if (str_len <= 0 || str_len > 256) {
+                struct timespec ts = {0, 50000000};
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            
+            char *str = malloc(str_len + 1);
+            if (!str) {
+                struct timespec ts = {0, 50000000};
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            
+            n = recv(sock, str, str_len, 0);
+            if (n == str_len) {
+                str[str_len] = '\0';
+                int notif_task_id = atoi(str);
+                char msg[256];
+                if (notif_task_id > 0) {
+                    snprintf(msg, sizeof(msg), "\n[ASYNC] Task %d completed. Use 'result %d' to get results.\n", notif_task_id, notif_task_id);
+                    write(STDOUT_FILENO, msg, strlen(msg));
+                }
+            }
+            free(str);
+            struct timespec ts = {0, 50000000};
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        
+        if (h.opID == OPR_UPLOAD_FILE) {
+            // Acesta e răspunsul așteptat - citește task_id
+            msgIntType task_id_msg;
+            int recv_req;
+            readSingleInt(sock, &task_id_msg, &recv_req);
+            task_id = task_id_msg.msg;
+            break;
+        }
+        
+        // Mesaj neașteptat - consumă-l indiferent
+        char dump[1024];
+        ssize_t n = recv(sock, dump, (h.msgSize > 1024) ? 1024 : h.msgSize, 0);
+        if (n <= 0) {
+            struct timespec ts = {0, 50000000};
+            nanosleep(&ts, NULL);
+        }
     }
     
-    int task_id = task_id_msg.msg;
+    if (task_id == -1) {
+        write(STDERR_FILENO, "Eroare: timeout la așteptarea task_id\n", 38);
+        return -1;
+    }
+    
+    if (task_id == 0) {
+        write(STDOUT_FILENO, "\n[INFO] File uploaded successfully. Waiting for async notification...\n", 65);
+        
+        // Așteaptă activ notificarea asincronă (maxim 5 secunde)
+        int notified = 0;
+        int wait_ms = 0;
+        while (!notified && wait_ms < 5000) {
+            struct timeval tv = {0, 1000000};  // 100ms
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(sock, &fds);
+            
+            if (select(sock + 1, &fds, NULL, NULL, &tv) > 0) {
+                msgHeaderType h;
+                if (peekMsgHeader(sock, &h) == 0 && h.opID == OPR_ASYNC_NOTIFY) {
+                    // Consumă notificarea
+                    char header[16];
+                    recv(sock, header, 16, 0);
+                    char len_buf[4];
+                    recv(sock, len_buf, 4, 0);
+                    int str_len = ntohl(*(int*)len_buf);
+                    if (str_len > 0 && str_len <= 256) {
+                        char *str = malloc(str_len + 1);
+                        if (str) {
+                            recv(sock, str, str_len, 0);
+                            str[str_len] = '\0';
+                            int tid = atoi(str);
+                            char msg[256];
+                            snprintf(msg, sizeof(msg), "\n[ASYNC] Task %d completed. Use 'result %d' to get results.\n", tid, tid);
+                            write(STDOUT_FILENO, msg, strlen(msg));
+                            free(str);
+                            notified = 1;
+                        }
+                    }
+                }
+            }
+            wait_ms += 100;
+        }
+        
+        if (!notified) {
+            write(STDOUT_FILENO, "[WARN] No async notification received within timeout\n", 52);
+        }
+        
+        return 0;
+    }
     
     snprintf(dbg, sizeof(dbg), "[CLIENT] Received task_id: %d\n", task_id);
     write(STDOUT_FILENO, dbg, strlen(dbg));
@@ -965,6 +1260,7 @@ void shell_loop(void) {
     char line[MAX_INPUT];
     
     while (1) {
+        consume_async_notifications(sock);
         print_prompt();
         
         if (read_line(STDIN_FILENO, line, sizeof(line)) <= 0) break;
@@ -1035,7 +1331,6 @@ void shell_loop(void) {
             }
             free(cmd);
         }
-
         else if (strncmp(line, "download", 8) == 0) {
             char *cmd = strdup(line);
             char *args[10];
