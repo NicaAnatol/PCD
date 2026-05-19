@@ -56,6 +56,7 @@ int main(int argc, char *argv[]) {
     
     // Creeaza directoarele necesare pentru fisiere temporare si procesare
     mkdir(g_config.geo.temp_dir, 0755);
+    mkdir("processing", 0755);
     mkdir("processing/uploads", 0755);
     mkdir("processing/processing", 0755);
     mkdir("processing/outgoing", 0755);
