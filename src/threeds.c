@@ -47,7 +47,6 @@ int main(int argc, char *argv[]) {
         if (opt == 'p') g_config.inet_port = atoi(optarg);
     }
     
-    // Initializare sistem de logare si mesaj de pornire
     log_init("server.log");
     log_message("[MAIN] Starting Geo Processing Server...");
     
