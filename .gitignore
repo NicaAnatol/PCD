@@ -94,4 +94,8 @@ venv.bak/
 *.tar.gz
 *.tgz
 *.rar
-*.7z
+*.7zserver.log
+*.log
+processing/uploads/*
+processing/outgoing/*
+download/*
